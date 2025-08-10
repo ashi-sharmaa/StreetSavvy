@@ -3,13 +3,18 @@ package config
 import (
     "database/sql"
     "fmt"
+    "log"
     "os"
-    "log"  // Add this import
+    "time"
 
     _ "github.com/lib/pq"
 )
 
-func InitDB() (*sql.DB, error) {
+// Global database connection pool
+var DB *sql.DB
+
+// InitDB initializes the global database connection pool
+func InitDB() error {
     // Get database configuration from environment variables
     host := getEnv("DB_HOST", "localhost")
     port := getEnv("DB_PORT", "5432")
@@ -18,7 +23,7 @@ func InitDB() (*sql.DB, error) {
     dbname := getEnv("DB_NAME", "streetsavvy")
     sslmode := getEnv("DB_SSLMODE", "disable")
 
-    // Build connection string with explicit SCRAM support
+    // Build connection string
     connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
         host, port, user, password, dbname, sslmode)
 
@@ -27,27 +32,32 @@ func InitDB() (*sql.DB, error) {
         host, port, user, dbname, sslmode)
     log.Printf("Attempting to connect with: %s", debugConnStr)
 
-    // Open database connection
+    // Open database connection pool
     db, err := sql.Open("postgres", connStr)
     if err != nil {
-        return nil, fmt.Errorf("error opening database: %v", err)
+        return fmt.Errorf("error opening database: %v", err)
     }
 
     // Test the connection
     log.Printf("Testing database connection...")
     if err := db.Ping(); err != nil {
-        return nil, fmt.Errorf("error connecting to database: %v", err)
+        return fmt.Errorf("error connecting to database: %v", err)
     }
 
     log.Printf("Database connection successful!")
 
-    // Set connection pool settings for scalability
-    db.SetMaxOpenConns(25)
-    db.SetMaxIdleConns(5)
+    // Configure connection pool for performance
+    db.SetMaxOpenConns(25)                 // Maximum 25 concurrent connections
+    db.SetMaxIdleConns(5)                  // Keep 5 connections ready
+    db.SetConnMaxLifetime(5 * time.Minute) // Refresh connections every 5 minutes
 
-    return db, nil
+    // Store in global variable
+    DB = db
+
+    return nil
 }
 
+// Helper function to get environment variables with defaults
 func getEnv(key, defaultValue string) string {
     if value := os.Getenv(key); value != "" {
         return value

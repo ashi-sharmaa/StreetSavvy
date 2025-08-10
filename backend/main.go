@@ -1,13 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 
+	"streetsavvy-backend/config"
+	"streetsavvy-backend/models"
+
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
-	"streetsavvy-backend/config"
 )
 
 func main() {
@@ -17,11 +20,9 @@ func main() {
 	}
 
 	// Initialize database connection
-	db, err := config.InitDB()
-	if err != nil {
+	if err := config.InitDB(); err != nil {
 		log.Fatal("Failed to connect to database:", err)
 	}
-	defer db.Close()
 
 	// Create router
 	r := mux.NewRouter()
@@ -32,9 +33,10 @@ func main() {
 	// API routes
 	api := r.PathPrefix("/api").Subrouter()
 
-	// Test endpoints (Phase 1)
-	api.HandleFunc("/test/users/{id}", getTestUser).Methods("GET")
-	api.HandleFunc("/test/vendors/{id}", getTestVendor).Methods("GET")
+	// api handlers (testing)
+	api.HandleFunc("/users/{id}", getUserHandler).Methods("GET")
+	//api.HandleFunc("/users/{id}/nearby", getNearbyPromsHandler).Methods("GET")
+	api.HandleFunc("/campaigns/active", getActiveCampaignsHandler).Methods("GET")
 	api.HandleFunc("/health", healthCheck).Methods("GET")
 
 	// Get port from environment or use default
@@ -64,17 +66,93 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 // Temporary test handlers (will be moved to handlers/ later)
-func getTestUser(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"message": "Test user endpoint working", "user_id": "U0001"}`))
-}
-
-func getTestVendor(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"message": "Test vendor endpoint working", "vendor_id": "V0001"}`))
-}
 
 func healthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status": "healthy", "service": "streetsavvy-backend"}`))
+}
+
+func getUserHandler(w http.ResponseWriter, r *http.Request) {
+	// extract user id from url 
+	vars := mux.Vars(r)
+	userID := vars["id"]	
+
+	// create sql query to get data; $1 is placeholder
+	query := "SELECT user_id, loyalty_tier, most_frequent_vendor, most_frequent_vendor_type, notif_sms, notif_whatsapp, notif_inapp, privacy FROM users WHERE user_id = $1"
+
+	// run query, make struct from results
+	var user models.User
+
+	// connect to db
+	err := config.DB.QueryRow(query, userID).Scan(  // ← Using config.DB global
+        &user.UserID, 
+        &user.LoyaltyTier, 
+        &user.MostFrequentVendor, 
+        &user.MostFrequentVendorType)
+    
+    if err != nil {
+        log.Printf("Error querying user %s: %v", userID, err)
+        http.Error(w, "User not found", http.StatusNotFound)
+        return
+    }
+    
+
+	// send json response 
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(user) // struct becomes json 
+}
+
+func getActiveCampaignsHandler(w http.ResponseWriter, r *http.Request) {
+    // SQL query for active campaigns (from your test data logic)
+    query := `SELECT campaign_id, vendor_id, title, code, description, geofence_radius_km, enabled
+              FROM campaigns 
+              WHERE enabled = true 
+              AND start_date <= CURRENT_DATE 
+              AND end_date >= CURRENT_DATE`
+    
+    // Execute query - returns multiple rows
+    rows, err := config.DB.Query(query)
+    if err != nil {
+        log.Printf("Error querying campaigns: %v", err)
+        http.Error(w, "Failed to fetch campaigns", http.StatusInternalServerError)
+        return
+    }
+    defer rows.Close()  // Always close rows when done
+    
+    // Create slice to hold multiple campaigns
+    var campaigns []models.Campaign
+    
+    // Loop through each row
+    for rows.Next() {
+        var campaign models.Campaign
+        
+        // Scan current row into struct
+        err := rows.Scan(
+            &campaign.CampaignID,
+            &campaign.VendorID, 
+            &campaign.Title,
+            &campaign.Code,
+            &campaign.Description,
+            &campaign.GeofenceRadiusKm,
+            &campaign.Enabled)
+        
+        if err != nil {
+            log.Printf("Error scanning campaign row: %v", err)
+            continue  // Skip this row, continue with next
+        }
+        
+        // Add campaign to our slice
+        campaigns = append(campaigns, campaign)
+    }
+    
+    // Check for any iteration errors
+    if err = rows.Err(); err != nil {
+        log.Printf("Error iterating campaigns: %v", err)
+        http.Error(w, "Error processing campaigns", http.StatusInternalServerError)
+        return
+    }
+    
+    // Return JSON array of campaigns
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(campaigns)
 }
