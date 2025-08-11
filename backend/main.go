@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 
 	"streetsavvy-backend/config"
 	"streetsavvy-backend/models"
@@ -37,6 +38,7 @@ func main() {
 	api.HandleFunc("/users/{id}", getUserHandler).Methods("GET")
 	//api.HandleFunc("/users/{id}/nearby", getNearbyPromsHandler).Methods("GET")
 	api.HandleFunc("/campaigns/active", getActiveCampaignsHandler).Methods("GET")
+	api.HandleFunc("/campaigns/nearby", getNearbyPromosHandler).Methods("GET")
 	api.HandleFunc("/health", healthCheck).Methods("GET")
 
 	// Get port from environment or use default
@@ -153,6 +155,94 @@ func getActiveCampaignsHandler(w http.ResponseWriter, r *http.Request) {
     }
     
     // Return JSON array of campaigns
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(campaigns)
+}
+
+func getNearbyPromosHandler(w http.ResponseWriter, r *http.Request) {
+    // Extract location parameters from query string
+    latStr := r.URL.Query().Get("lat")
+    lngStr := r.URL.Query().Get("lng")
+    radiusStr := r.URL.Query().Get("radius")
+    
+    // Validate required parameters
+    if latStr == "" || lngStr == "" {
+        http.Error(w, "Missing required parameters: lat, lng", http.StatusBadRequest)
+        return
+    }
+    
+    // Convert strings to numbers
+    lat, err := strconv.ParseFloat(latStr, 64)
+    if err != nil {
+        http.Error(w, "Invalid latitude", http.StatusBadRequest)
+        return
+    }
+    
+    lng, err := strconv.ParseFloat(lngStr, 64)
+    if err != nil {
+        http.Error(w, "Invalid longitude", http.StatusBadRequest)
+        return
+    }
+    
+    // Default radius to 1km if not provided
+    radius := 1.0
+    if radiusStr != "" {
+        radius, err = strconv.ParseFloat(radiusStr, 64)
+        if err != nil {
+            http.Error(w, "Invalid radius", http.StatusBadRequest)
+            return
+        }
+    }
+
+	radiusMeters := int(radius * 1000) 
+    
+    // PostGIS spatial query 
+    query := `
+        SELECT c.campaign_id, c.vendor_id, c.title, c.code, c.description, c.geofence_radius_km
+        FROM campaigns c
+        JOIN vendors v ON c.vendor_id = v.vendor_id
+        WHERE c.enabled = true 
+        AND c.start_date <= CURRENT_DATE 
+        AND c.end_date >= CURRENT_DATE
+        AND ST_DWithin(
+            ST_Transform(ST_SetSRID(ST_MakePoint(v.long, v.lat), 4326), 3857),
+            ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 3857),
+            $3
+        )`
+    
+    log.Printf("Searching for campaigns near lat=%f, lng=%f, radius=%fkm (%d meters)", lat, lng, radius)
+    
+    // Execute the geospatial query
+    rows, err := config.DB.Query(query, lng, lat, radiusMeters)  // Note: lng, lat order for PostGIS
+    if err != nil {
+        log.Printf("Error executing geospatial query: %v", err)
+        http.Error(w, "Geospatial query failed", http.StatusInternalServerError)
+        return
+    }
+    defer rows.Close()
+    
+    // Process results (same as before)
+    var campaigns []models.Campaign
+    for rows.Next() {
+        var c models.Campaign
+        err := rows.Scan(
+            &c.CampaignID,
+            &c.VendorID,
+            &c.Title,
+            &c.Code,
+            &c.Description,
+            &c.GeofenceRadiusKm)
+        
+        if err != nil {
+            log.Printf("Error scanning campaign row: %v", err)
+            continue
+        }
+        
+        campaigns = append(campaigns, c)
+    }
+    
+    log.Printf("Found %d campaigns within %fkm", len(campaigns), radius)
+    
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(campaigns)
 }
