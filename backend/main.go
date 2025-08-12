@@ -38,7 +38,7 @@ func main() {
 	api.HandleFunc("/users/{id}", getUserHandler).Methods("GET")
 	//api.HandleFunc("/users/{id}/nearby", getNearbyPromsHandler).Methods("GET")
 	api.HandleFunc("/campaigns/active", getActiveCampaignsHandler).Methods("GET")
-	api.HandleFunc("/campaigns/nearby", getNearbyPromosHandler).Methods("GET")
+	api.HandleFunc("/campaigns/nearby", getNearbyPromsHandler).Methods("GET")
 	api.HandleFunc("/health", healthCheck).Methods("GET")
 
 	// Get port from environment or use default
@@ -159,90 +159,101 @@ func getActiveCampaignsHandler(w http.ResponseWriter, r *http.Request) {
     json.NewEncoder(w).Encode(campaigns)
 }
 
-func getNearbyPromosHandler(w http.ResponseWriter, r *http.Request) {
-    // Extract location parameters from query string
-    latStr := r.URL.Query().Get("lat")
-    lngStr := r.URL.Query().Get("lng")
-    radiusStr := r.URL.Query().Get("radius")
-    
-    // Validate required parameters
-    if latStr == "" || lngStr == "" {
-        http.Error(w, "Missing required parameters: lat, lng", http.StatusBadRequest)
-        return
-    }
-    
-    // Convert strings to numbers
-    lat, err := strconv.ParseFloat(latStr, 64)
-    if err != nil {
-        http.Error(w, "Invalid latitude", http.StatusBadRequest)
-        return
-    }
-    
-    lng, err := strconv.ParseFloat(lngStr, 64)
-    if err != nil {
-        http.Error(w, "Invalid longitude", http.StatusBadRequest)
-        return
-    }
-    
-    // Default radius to 1km if not provided
-    radius := 1.0
-    if radiusStr != "" {
-        radius, err = strconv.ParseFloat(radiusStr, 64)
-        if err != nil {
-            http.Error(w, "Invalid radius", http.StatusBadRequest)
-            return
-        }
-    }
-
-	radiusMeters := int(radius * 1000) 
-    
-    // PostGIS spatial query 
-    query := `
-        SELECT c.campaign_id, c.vendor_id, c.title, c.code, c.description, c.geofence_radius_km
-        FROM campaigns c
-        JOIN vendors v ON c.vendor_id = v.vendor_id
-        WHERE c.enabled = true 
-        AND c.start_date <= CURRENT_DATE 
-        AND c.end_date >= CURRENT_DATE
-        AND ST_DWithin(
-            ST_Transform(ST_SetSRID(ST_MakePoint(v.long, v.lat), 4326), 3857),
-            ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 3857),
-            $3
-        )`
-    
-    log.Printf("Searching for campaigns near lat=%f, lng=%f, radius=%fkm (%d meters)", lat, lng, radius)
-    
-    // Execute the geospatial query
-    rows, err := config.DB.Query(query, lng, lat, radiusMeters)  // Note: lng, lat order for PostGIS
-    if err != nil {
-        log.Printf("Error executing geospatial query: %v", err)
-        http.Error(w, "Geospatial query failed", http.StatusInternalServerError)
-        return
-    }
-    defer rows.Close()
-    
-    // Process results (same as before)
-    var campaigns []models.Campaign
-    for rows.Next() {
-        var c models.Campaign
-        err := rows.Scan(
-            &c.CampaignID,
-            &c.VendorID,
-            &c.Title,
-            &c.Code,
-            &c.Description,
-            &c.GeofenceRadiusKm)
-        
-        if err != nil {
-            log.Printf("Error scanning campaign row: %v", err)
-            continue
-        }
-        
-        campaigns = append(campaigns, c)
-    }
-    
-    log.Printf("Found %d campaigns within %fkm", len(campaigns), radius)
-    
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(campaigns)
-}
+func getNearbyPromsHandler(w http.ResponseWriter, r *http.Request) {
+	
+		// Extract location parameters from query string
+		latStr := r.URL.Query().Get("lat")
+		lngStr := r.URL.Query().Get("lng")
+		radiusStr := r.URL.Query().Get("radius")
+		
+		// Validate required parameters
+		if latStr == "" || lngStr == "" {
+			http.Error(w, "Missing required parameters: lat, lng", http.StatusBadRequest)
+			return
+		}
+		
+		// Convert strings to numbers
+		lat, err := strconv.ParseFloat(latStr, 64)
+		if err != nil {
+			http.Error(w, "Invalid latitude", http.StatusBadRequest)
+			return
+		}
+		
+		lng, err := strconv.ParseFloat(lngStr, 64)
+		if err != nil {
+			http.Error(w, "Invalid longitude", http.StatusBadRequest)
+			return
+		}
+		
+		// Default radius to 1km if not provided
+		radius := 1.0
+		if radiusStr != "" {
+			radius, err = strconv.ParseFloat(radiusStr, 64)
+			if err != nil {
+				http.Error(w, "Invalid radius", http.StatusBadRequest)
+				return
+			}
+		}
+		
+		radiusMeters := int(radius * 1000)
+		
+		log.Printf("=== Searching near lat=%f, lng=%f, radius=%dkm ===", lat, lng, radiusMeters/1000)
+		
+		// Check current date and C0002 status first
+		var currentDate string
+		config.DB.QueryRow("SELECT CURRENT_DATE::text").Scan(&currentDate)
+		log.Printf("🔧 Current date: %s", currentDate)
+		
+		var c2ID, c2Start, c2End string
+		var c2Enabled bool
+		c2Err := config.DB.QueryRow("SELECT campaign_id, enabled, start_date::text, end_date::text FROM campaigns WHERE campaign_id = 'C0002'").Scan(&c2ID, &c2Enabled, &c2Start, &c2End)
+		if c2Err == nil {
+			log.Printf("🔧 C0002: enabled=%t, start=%s, end=%s", c2Enabled, c2Start, c2End)
+		}
+		
+		// Main geospatial query
+		query := `
+			SELECT c.campaign_id, c.vendor_id, c.title, c.code, c.description, c.geofence_radius_km
+			FROM campaigns c
+			JOIN vendors v ON c.vendor_id = v.vendor_id
+			WHERE c.enabled = true 
+			AND c.start_date <= CURRENT_DATE 
+			AND c.end_date >= CURRENT_DATE
+			AND ST_DWithin(
+				ST_Transform(ST_SetSRID(ST_MakePoint(v.long, v.lat), 4326), 3857),
+				ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 3857),
+				$3
+			)`
+		
+		// Execute query
+		rows, err := config.DB.Query(query, lng, lat, radiusMeters)
+		if err != nil {
+			log.Printf("❌ Query error: %v", err)
+			http.Error(w, "Query failed", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		
+		// Collect results
+		var campaigns []models.Campaign
+		for rows.Next() {
+			var c models.Campaign
+			err := rows.Scan(&c.CampaignID, &c.VendorID, &c.Title, &c.Code, &c.Description, &c.GeofenceRadiusKm)
+			if err != nil {
+				log.Printf("❌ Scan error: %v", err)
+				continue
+			}
+			log.Printf("✅ Found campaign: %s (%s)", c.CampaignID, c.Title)
+			campaigns = append(campaigns, c)
+		}
+		
+		if err = rows.Err(); err != nil {
+			log.Printf("❌ Iteration error: %v", err)
+		}
+		
+		log.Printf("=== RESULT: %d campaigns found ===", len(campaigns))
+		
+		// Return results
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(campaigns)
+	}
