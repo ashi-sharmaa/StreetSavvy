@@ -274,35 +274,36 @@ func getUserNearbyPromsHandler(w http.ResponseWriter, r *http.Request) {
 
 
 
-// Add this handler function to main.go:
+// recordEngagementHandler handles user engagement with campaigns
 func recordEngagementHandler(w http.ResponseWriter, r *http.Request) {
-	// Extract URL parameters
+	// PART 1: Extract URL parameters
 	vars := mux.Vars(r)
 	userID := vars["user_id"]
 	campaignID := vars["campaign_id"]
 	
-	log.Printf("Recording engagement: user=%s, campaign=%s", userID, campaignID)
+	log.Printf("🎯 Recording engagement: user=%s, campaign=%s", userID, campaignID)
 	
-	// Parse request body to get engagement type 
+	// PART 2: Parse request body (keeping struct for clarity)
 	type EngagementRequest struct {
-		Action    string  `json:"action"`    // "clicked" or "used"
+		Action string `json:"action"` // "clicked" or "used"
 	}
 	
 	var req EngagementRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
-		log.Printf("Error parsing engagement request: %v", err)
+		log.Printf("❌ Error parsing request: %v", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 	
-	// Validate action type
+	// PART 3: Validate action
 	if req.Action != "clicked" && req.Action != "used" {
+		log.Printf("❌ Invalid action: %s", req.Action)
 		http.Error(w, "Action must be 'clicked' or 'used'", http.StatusBadRequest)
 		return
 	}
-
-	// get user's most recent location to record engagement
+	
+	// PART 4: Get user's real location from database
 	var userLat, userLng float64
 	locationQuery := `
 		SELECT lat, long FROM user_location_events
@@ -319,84 +320,171 @@ func recordEngagementHandler(w http.ResponseWriter, r *http.Request) {
 	
 	log.Printf("📍 User %s location: lat=%f, lng=%f", userID, userLat, userLng)
 	
+	// PART 5: Check for duplicate engagement (updated for new schema)
+var duplicateCheck int
+var checkQuery string
+var timeWindow string
 
+if req.Action == "clicked" {
+    // Check for clicks in last 5 minutes
+    timeWindow = "5 minutes"
+    checkQuery = `
+        SELECT COUNT(*) FROM campaign_user_engagements 
+        WHERE user_id = $1 AND campaign_id = $2 
+        AND engagement_type = 'clicked'
+        AND engagement_time > NOW() - INTERVAL '5 minutes'`
+} else {
+    // Check for usage today
+    timeWindow = "today"
+    checkQuery = `
+        SELECT COUNT(*) FROM campaign_user_engagements 
+        WHERE user_id = $1 AND campaign_id = $2 
+        AND engagement_type = 'used'
+        AND DATE(engagement_time) = CURRENT_DATE`
+}
+
+err = config.DB.QueryRow(checkQuery, userID, campaignID).Scan(&duplicateCheck)
+if err != nil {
+    log.Printf("❌ Error checking duplicates: %v", err)
+    http.Error(w, "Database error", http.StatusInternalServerError)
+    return
+}
+
+if duplicateCheck > 0 {
+    log.Printf("⏭️ Duplicate %s engagement ignored (already %s %s)", 
+        req.Action, req.Action, timeWindow)
+    
+    response := map[string]interface{}{
+        "success": true,
+        "message": fmt.Sprintf("Engagement already recorded %s", timeWindow),
+        "duplicate": true,
+    }
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+    return
+}
+
+// PART 6: Insert new engagement record (SIMPLIFIED QUERY)
+insertQuery := `
+    INSERT INTO campaign_user_engagements 
+    (user_id, campaign_id, engagement_type, used_loc_lat, used_loc_long, engagement_time)
+    VALUES ($1, $2, $3, $4, $5, NOW())`
+
+_, err = config.DB.Exec(insertQuery, userID, campaignID, req.Action, userLat, userLng)
+if err != nil {
+    log.Printf("❌ Error inserting engagement: %v", err)
+    http.Error(w, "Failed to record engagement", http.StatusInternalServerError)
+    return
+}
+
+log.Printf("✅ Inserted new %s engagement: user=%s, campaign=%s", 
+    req.Action, userID, campaignID)
 	
-	// Check if engagement already exists
-	var existingEngagement struct {
-		Clicked bool `db:"clicked"`
-		Used    bool `db:"used"`
+	// PART 7: Update user preferences based on engagement frequency (OPTIONAL)
+	/*
+	ANALYTICS FEATURE: Update user's most_frequent_vendor and most_frequent_vendor_type
+	based on their engagement patterns
+	*/
+	if req.Action == "used" {
+		// Only update preferences on actual usage, not just clicks
+		go updateUserPreferences(userID) // Run in background to avoid slowing response
 	}
 	
-	checkQuery := `
-		SELECT clicked, used 
-		FROM campaign_user_engagements 
-		WHERE user_id = $1 AND campaign_id = $2`
-	
-	err = config.DB.QueryRow(checkQuery, userID, campaignID).Scan(
-		&existingEngagement.Clicked, &existingEngagement.Used)
-	
-	if err != nil && err != sql.ErrNoRows {
-		log.Printf("Error checking existing engagement: %v", err)
-		http.Error(w, "Database error", http.StatusInternalServerError)
-		return
-	}
-	
-	// Determine what to update
-	newClicked := existingEngagement.Clicked
-	newUsed := existingEngagement.Used
-	
-	if req.Action == "clicked" {
-		newClicked = true
-	} else if req.Action == "used" {
-		newUsed = true
-		// Also mark as clicked if they used it
-		newClicked = true
-	}
-	
-	// Insert or update engagement record
-	if err == sql.ErrNoRows {
-		// Create new engagement record
-		insertQuery := `
-			INSERT INTO campaign_user_engagements 
-			(user_id, campaign_id, clicked, used, used_loc_lat, used_loc_long)
-			VALUES ($1, $2, $3, $4, $5, $6)`
-		
-		_, err = config.DB.Exec(insertQuery, userID, campaignID, newClicked, newUsed, userLat, userLng)
-		if err != nil {
-			log.Printf("Error inserting engagement: %v", err)
-			http.Error(w, "Failed to record engagement", http.StatusInternalServerError)
-			return
-		}
-		log.Printf("✅ Created new engagement record for user %s, campaign %s", userID, campaignID)
-	} else {
-		// Update existing engagement record
-		updateQuery := `
-			UPDATE campaign_user_engagements 
-			SET clicked = $3, used = $4, used_loc_lat = $5, used_loc_long = $6
-			WHERE user_id = $1 AND campaign_id = $2`
-		
-		_, err = config.DB.Exec(updateQuery, userID, campaignID, newClicked, newUsed, userLat, userLng)
-		if err != nil {
-			log.Printf("Error updating engagement: %v", err)
-			http.Error(w, "Failed to update engagement", http.StatusInternalServerError)
-			return
-		}
-		log.Printf("✅ Updated engagement record for user %s, campaign %s", userID, campaignID)
-	}
-	
-	// Return success response
+	// PART 8: Return success response
 	response := map[string]interface{}{
 		"success": true,
-		"message": fmt.Sprintf("Engagement recorded: %s", req.Action),
+		"message": fmt.Sprintf("New %s engagement recorded", req.Action),
 		"engagement": map[string]interface{}{
-			"user_id":     userID,
-			"campaign_id": campaignID,
-			"action":      req.Action,
-			"clicked":     newClicked,
-			"used":        newUsed,
+			"user_id":       userID,
+			"campaign_id":   campaignID,
+			"action":        req.Action,
+			"location": map[string]float64{
+				"latitude":  userLat,
+				"longitude": userLng,
+			},
+			"timestamp": "NOW()", // Will be set by database
 		},
+		"duplicate": false,
 	}
 	
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// PART 9: Background function to update user preferences
+/*
+ANALYTICS LOGIC: Update user's most frequent vendor/type based on usage patterns
+This runs asynchronously so it doesn't slow down the engagement recording
+*/
+func updateUserPreferences(userID string) {
+	log.Printf("🔄 Updating preferences for user %s", userID)
+	
+	// Find most frequently used vendor (FIXED: use engagement_type instead of used column)
+	var mostFrequentVendor string
+	vendorQuery := `
+		SELECT v.vendor_id 
+		FROM campaign_user_engagements cue
+		JOIN campaigns c ON cue.campaign_id = c.campaign_id
+		JOIN vendors v ON c.vendor_id = v.vendor_id
+		WHERE cue.user_id = $1 AND cue.engagement_type = 'used'
+		GROUP BY v.vendor_id
+		ORDER BY COUNT(*) DESC
+		LIMIT 1`
+	
+	err := config.DB.QueryRow(vendorQuery, userID).Scan(&mostFrequentVendor)
+	if err != nil && err != sql.ErrNoRows {
+		log.Printf("❌ Error finding most frequent vendor: %v", err)
+		return
+	}
+	
+	// Find most frequently used vendor type (FIXED: use engagement_type instead of used column)
+	var mostFrequentVendorType string
+	typeQuery := `
+		SELECT v.vendor_type
+		FROM campaign_user_engagements cue
+		JOIN campaigns c ON cue.campaign_id = c.campaign_id
+		JOIN vendors v ON c.vendor_id = v.vendor_id
+		WHERE cue.user_id = $1 AND cue.engagement_type = 'used'
+		GROUP BY v.vendor_type
+		ORDER BY COUNT(*) DESC
+		LIMIT 1`
+	
+	err = config.DB.QueryRow(typeQuery, userID).Scan(&mostFrequentVendorType)
+	if err != nil && err != sql.ErrNoRows {
+		log.Printf("❌ Error finding most frequent vendor type: %v", err)
+		return
+	}
+	
+	// Update user preferences if we found data
+	if mostFrequentVendor != "" || mostFrequentVendorType != "" {
+		updateQuery := `
+			UPDATE users 
+			SET most_frequent_vendor = COALESCE($2, most_frequent_vendor),
+				most_frequent_vendor_type = COALESCE($3, most_frequent_vendor_type)
+			WHERE user_id = $1`
+		
+		// Handle NULL values properly
+		var vendorParam, typeParam interface{}
+		if mostFrequentVendor != "" {
+			vendorParam = mostFrequentVendor
+		} else {
+			vendorParam = nil
+		}
+		if mostFrequentVendorType != "" {
+			typeParam = mostFrequentVendorType
+		} else {
+			typeParam = nil
+		}
+		
+		_, err = config.DB.Exec(updateQuery, userID, vendorParam, typeParam)
+		
+		if err != nil {
+			log.Printf("❌ Error updating user preferences: %v", err)
+		} else {
+			log.Printf("✅ Updated preferences for %s: vendor=%s, type=%s", 
+				userID, mostFrequentVendor, mostFrequentVendorType)
+		}
+	} else {
+		log.Printf("📊 No usage data yet for user %s - preferences unchanged", userID)
+	}
 }
