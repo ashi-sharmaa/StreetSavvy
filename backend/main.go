@@ -41,6 +41,7 @@ func main() {
 	api.HandleFunc("/campaigns/active", getActiveCampaignsHandler).Methods("GET")
 	api.HandleFunc("/health", healthCheck).Methods("GET")
 	api.HandleFunc("/users/{user_id}/campaigns/{campaign_id}/engage", recordEngagementHandler).Methods("POST")
+	api.HandleFunc("/vendors/{vendor_id}/analytics", getVendorAnalyticsHandler).Methods("GET")
 
 	// Get port from environment or use default
 	port := os.Getenv("PORT")
@@ -487,4 +488,214 @@ func updateUserPreferences(userID string) {
 	} else {
 		log.Printf("📊 No usage data yet for user %s - preferences unchanged", userID)
 	}
+}
+
+
+// get engagement stats for a vendor's campaigns 
+func getVendorAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
+	// PART 1: Extract vendor ID from URL
+	vars := mux.Vars(r)
+	vendorID := vars["vendor_id"]
+	
+	log.Printf("📊 Getting analytics for vendor %s", vendorID)
+	
+	// PART 2: Get individual campaign statistics (clicks and uses per campaign)
+	/*
+	CAMPAIGN ANALYTICS SQL BREAKDOWN:
+	
+	SELECT c.campaign_id, c.title, c.code, c.enabled,
+	This gets basic campaign info from the campaigns table
+	
+	COALESCE(clicks.total_clicks, 0) as total_clicks,
+	COALESCE uses clicks.total_clicks if it exists, otherwise 0
+	This handles campaigns with no engagements (prevents NULL)
+	
+	COALESCE(uses.total_uses, 0) as total_uses
+	Same for uses - prevents NULL values
+	
+	LEFT JOIN (...) clicks ON c.campaign_id = clicks.campaign_id
+	LEFT JOIN means: keep ALL campaigns, even if they have 0 engagements
+	INNER JOIN would only show campaigns that have engagements
+	
+	The subquery:
+	SELECT campaign_id, COUNT(*) as total_clicks
+	FROM campaign_user_engagements 
+	WHERE engagement_type = 'clicked'
+	GROUP BY campaign_id
+	
+	This counts how many 'clicked' records exist for each campaign
+	GROUP BY campaign_id means: separate count for each campaign
+	*/
+	campaignQuery := `
+		SELECT 
+			c.campaign_id,
+			c.title,
+			c.code,
+			c.enabled,
+			-- Count clicks for this campaign (0 if none)
+			COALESCE(clicks.total_clicks, 0) as total_clicks,
+			-- Count uses for this campaign (0 if none)  
+			COALESCE(uses.total_uses, 0) as total_uses
+		FROM campaigns c
+		
+		-- LEFT JOIN: Keep all campaigns, even with 0 clicks
+		LEFT JOIN (
+			SELECT 
+				campaign_id, 
+				COUNT(*) as total_clicks
+			FROM campaign_user_engagements 
+			WHERE engagement_type = 'clicked'
+			GROUP BY campaign_id
+		) clicks ON c.campaign_id = clicks.campaign_id
+		
+		-- LEFT JOIN: Keep all campaigns, even with 0 uses
+		LEFT JOIN (
+			SELECT 
+				campaign_id, 
+				COUNT(*) as total_uses
+			FROM campaign_user_engagements 
+			WHERE engagement_type = 'used'
+			GROUP BY campaign_id
+		) uses ON c.campaign_id = uses.campaign_id
+		
+		-- Only campaigns for this vendor
+		WHERE c.vendor_id = $1
+		ORDER BY c.campaign_id`
+	
+	// PART 3: Execute campaign analytics query
+	rows, err := config.DB.Query(campaignQuery, vendorID)
+	if err != nil {
+		log.Printf("❌ Error executing campaign query: %v", err)
+		http.Error(w, "Failed to get campaign analytics", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	
+	// PART 4: Collect campaign data (simplified structure)
+	type CampaignMetrics struct {
+		CampaignID  string `json:"campaign_id"`
+		Title       string `json:"title"`
+		Code        string `json:"code"`
+		Enabled     bool   `json:"enabled"`
+		TotalClicks int    `json:"total_clicks"`
+		TotalUses   int    `json:"total_uses"`
+	}
+	
+	var campaigns []CampaignMetrics
+	var vendorTotalClicks, vendorTotalUses int
+	
+	// PART 5: Process each campaign
+	for rows.Next() {
+		var cm CampaignMetrics
+		err := rows.Scan(
+			&cm.CampaignID,
+			&cm.Title,
+			&cm.Code,
+			&cm.Enabled,
+			&cm.TotalClicks,
+			&cm.TotalUses,
+		)
+		if err != nil {
+			log.Printf("❌ Error scanning campaign: %v", err)
+			continue
+		}
+		
+		// Add to vendor totals
+		vendorTotalClicks += cm.TotalClicks
+		vendorTotalUses += cm.TotalUses
+		
+		campaigns = append(campaigns, cm)
+		
+		log.Printf("📈 Campaign %s: %d clicks, %d uses", 
+			cm.CampaignID, cm.TotalClicks, cm.TotalUses)
+	}
+	
+	if err = rows.Err(); err != nil {
+		log.Printf("❌ Error iterating campaigns: %v", err)
+		http.Error(w, "Error processing campaigns", http.StatusInternalServerError)
+		return
+	}
+	
+	// PART 6: Get vendor-level statistics with PROPER SQL
+	/*
+	VENDOR OVERALL ANALYTICS SQL BREAKDOWN:
+	
+	COUNT(DISTINCT CASE WHEN engagement_type = 'clicked' THEN user_id END)
+	This counts unique users who clicked ANY campaign for this vendor
+	DISTINCT user_id ensures each user is counted only once
+	CASE WHEN filters to only count 'clicked' engagements
+	
+	COUNT(DISTINCT CASE WHEN engagement_type = 'used' THEN user_id END)  
+	Same for users who actually used any campaign
+	
+	COUNT(DISTINCT user_id)
+	Total unique users who had ANY engagement with this vendor
+	
+	The JOIN chain:
+	campaign_user_engagements -> campaigns -> vendors
+	This connects engagements to the vendor through campaigns
+	*/
+	var uniqueClickUsers, uniqueUseUsers, totalUniqueUsers int
+	
+	vendorStatsQuery := `
+		SELECT 
+			-- Unique users who clicked any campaign for this vendor
+			COUNT(DISTINCT CASE WHEN cue.engagement_type = 'clicked' THEN cue.user_id END) as unique_click_users,
+			-- Unique users who used any campaign for this vendor  
+			COUNT(DISTINCT CASE WHEN cue.engagement_type = 'used' THEN cue.user_id END) as unique_use_users,
+			-- Total unique users who engaged with this vendor (clicked OR used)
+			COUNT(DISTINCT cue.user_id) as total_unique_users
+		FROM campaign_user_engagements cue
+		JOIN campaigns c ON cue.campaign_id = c.campaign_id
+		WHERE c.vendor_id = $1`
+	
+	err = config.DB.QueryRow(vendorStatsQuery, vendorID).Scan(
+		&uniqueClickUsers, &uniqueUseUsers, &totalUniqueUsers)
+	
+	if err != nil {
+		// If no engagements exist, set to 0
+		if err == sql.ErrNoRows {
+			uniqueClickUsers = 0
+			uniqueUseUsers = 0
+			totalUniqueUsers = 0
+		} else {
+			log.Printf("❌ Error getting vendor stats: %v", err)
+			http.Error(w, "Failed to get vendor statistics", http.StatusInternalServerError)
+			return
+		}
+	}
+	
+	// PART 7: Calculate overall conversion rate for vendor
+	/*
+	CONVERSION RATE CALCULATION:
+	- If vendor has 0 total clicks: conversion = 0% (can't divide by 0)
+	- Otherwise: (total_uses / total_clicks) * 100
+	- Round to 1 decimal place for clean display
+	*/
+	var overallConversionRate float64
+	if vendorTotalClicks > 0 {
+		overallConversionRate = float64(vendorTotalUses) / float64(vendorTotalClicks) * 100
+		// Round to 1 decimal place
+		overallConversionRate = float64(int(overallConversionRate*10)) / 10
+	}
+	
+	// PART 8: Build clean response structure
+	response := map[string]interface{}{
+		"vendor_id": vendorID,
+		// VENDOR OVERALL METRICS (for dashboard summary)
+		"vendor_summary": map[string]interface{}{
+			"total_campaigns":        len(campaigns),
+			"overall_conversion_rate": overallConversionRate, // Percentage
+			"total_unique_users":     totalUniqueUsers,       // DISTINCT count across all campaigns
+		},
+		// INDIVIDUAL CAMPAIGN METRICS (for campaign cards) 
+		"campaigns": campaigns, // Each has: campaign_id, title, code, enabled, total_clicks, total_uses
+	}
+	
+	log.Printf("✅ Vendor %s analytics: %d campaigns, %.1f%% conversion, %d unique users", 
+		vendorID, len(campaigns), overallConversionRate, totalUniqueUsers)
+	
+	// PART 9: Return clean analytics
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
