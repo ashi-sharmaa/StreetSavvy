@@ -36,4 +36,39 @@ class ApiService {
       return [];
     }
   }
+
+  /// Record user engagement with a campaign 
+  static Future<bool> recordEngagement({
+    required String userId,
+    required String campaignId,
+    required String action, // "clicked" or "used"
+  }) async {
+    try {
+      final url = '$baseUrl/users/$userId/campaigns/$campaignId/engage';
+      print('📊 Recording engagement: $userId $action $campaignId');
+      
+      final requestBody = {
+        'action': action,
+      };
+      
+      final response = await http.post(
+        Uri.parse(url),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(requestBody),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        print('✅ Engagement recorded: ${data['message']}');
+        return true;
+      } else {
+        print('❌ Failed to record engagement: ${response.statusCode}');
+        print('Response: ${response.body}');
+        return false;
+      }
+    } catch (e) {
+      print('💥 Error recording engagement: $e');
+      return false;
+    }
+  }
 }

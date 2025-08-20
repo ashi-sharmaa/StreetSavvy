@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"fmt"
+	"database/sql"
 
 	"streetsavvy-backend/config"
 	"streetsavvy-backend/models"
@@ -38,6 +40,7 @@ func main() {
 	api.HandleFunc("/users/{id}/nearby-campaigns", getUserNearbyPromsHandler).Methods("GET")
 	api.HandleFunc("/campaigns/active", getActiveCampaignsHandler).Methods("GET")
 	api.HandleFunc("/health", healthCheck).Methods("GET")
+	api.HandleFunc("/users/{user_id}/campaigns/{campaign_id}/engage", recordEngagementHandler).Methods("POST")
 
 	// Get port from environment or use default
 	port := os.Getenv("PORT")
@@ -267,4 +270,133 @@ func getUserNearbyPromsHandler(w http.ResponseWriter, r *http.Request) {
 	
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(campaigns)
+}
+
+
+
+// Add this handler function to main.go:
+func recordEngagementHandler(w http.ResponseWriter, r *http.Request) {
+	// Extract URL parameters
+	vars := mux.Vars(r)
+	userID := vars["user_id"]
+	campaignID := vars["campaign_id"]
+	
+	log.Printf("Recording engagement: user=%s, campaign=%s", userID, campaignID)
+	
+	// Parse request body to get engagement type 
+	type EngagementRequest struct {
+		Action    string  `json:"action"`    // "clicked" or "used"
+	}
+	
+	var req EngagementRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		log.Printf("Error parsing engagement request: %v", err)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	
+	// Validate action type
+	if req.Action != "clicked" && req.Action != "used" {
+		http.Error(w, "Action must be 'clicked' or 'used'", http.StatusBadRequest)
+		return
+	}
+
+	// get user's most recent location to record engagement
+	var userLat, userLng float64
+	locationQuery := `
+		SELECT lat, long FROM user_location_events
+		WHERE user_id = $1
+		ORDER BY event_time DESC
+		LIMIT 1`
+	
+	err = config.DB.QueryRow(locationQuery, userID).Scan(&userLat, &userLng)
+	if err != nil {
+		log.Printf("❌ User %s location not found: %v", userID, err)
+		http.Error(w, "User location not found", http.StatusNotFound)
+		return
+	}
+	
+	log.Printf("📍 User %s location: lat=%f, lng=%f", userID, userLat, userLng)
+	
+
+	
+	// Check if engagement already exists
+	var existingEngagement struct {
+		Clicked bool `db:"clicked"`
+		Used    bool `db:"used"`
+	}
+	
+	checkQuery := `
+		SELECT clicked, used 
+		FROM campaign_user_engagements 
+		WHERE user_id = $1 AND campaign_id = $2`
+	
+	err = config.DB.QueryRow(checkQuery, userID, campaignID).Scan(
+		&existingEngagement.Clicked, &existingEngagement.Used)
+	
+	if err != nil && err != sql.ErrNoRows {
+		log.Printf("Error checking existing engagement: %v", err)
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	
+	// Determine what to update
+	newClicked := existingEngagement.Clicked
+	newUsed := existingEngagement.Used
+	
+	if req.Action == "clicked" {
+		newClicked = true
+	} else if req.Action == "used" {
+		newUsed = true
+		// Also mark as clicked if they used it
+		newClicked = true
+	}
+	
+	// Insert or update engagement record
+	if err == sql.ErrNoRows {
+		// Create new engagement record
+		insertQuery := `
+			INSERT INTO campaign_user_engagements 
+			(user_id, campaign_id, clicked, used, used_loc_lat, used_loc_long)
+			VALUES ($1, $2, $3, $4, $5, $6)`
+		
+		_, err = config.DB.Exec(insertQuery, userID, campaignID, newClicked, newUsed, userLat, userLng)
+		if err != nil {
+			log.Printf("Error inserting engagement: %v", err)
+			http.Error(w, "Failed to record engagement", http.StatusInternalServerError)
+			return
+		}
+		log.Printf("✅ Created new engagement record for user %s, campaign %s", userID, campaignID)
+	} else {
+		// Update existing engagement record
+		updateQuery := `
+			UPDATE campaign_user_engagements 
+			SET clicked = $3, used = $4, used_loc_lat = $5, used_loc_long = $6
+			WHERE user_id = $1 AND campaign_id = $2`
+		
+		_, err = config.DB.Exec(updateQuery, userID, campaignID, newClicked, newUsed, userLat, userLng)
+		if err != nil {
+			log.Printf("Error updating engagement: %v", err)
+			http.Error(w, "Failed to update engagement", http.StatusInternalServerError)
+			return
+		}
+		log.Printf("✅ Updated engagement record for user %s, campaign %s", userID, campaignID)
+	}
+	
+	// Return success response
+	response := map[string]interface{}{
+		"success": true,
+		"message": fmt.Sprintf("Engagement recorded: %s", req.Action),
+		"engagement": map[string]interface{}{
+			"user_id":     userID,
+			"campaign_id": campaignID,
+			"action":      req.Action,
+			"clicked":     newClicked,
+			"used":        newUsed,
+		},
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }

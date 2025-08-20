@@ -136,7 +136,19 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     );
   }
 
-  void _openPromotionDetail(Map<String, dynamic> promotion) {
+  void _openPromotionDetail(Map<String, dynamic> promotion) async {
+    // get current campaign to track engagement 
+    final campaignId = promotion['campaign_id'] ?? '';
+  
+    // Record "clicked" engagement when user opens promotion details
+    if (campaignId.isNotEmpty) {
+      await ApiService.recordEngagement(
+        userId: _currentUserId,
+        campaignId: campaignId,
+        action: 'clicked',
+      );
+    }
+    
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -159,11 +171,33 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
             child: const Text('Close'),
           ),
           ElevatedButton(
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Promotion activated!')),
-              );
+              
+              // Record "used" engagement when user uses promotion
+              if (campaignId.isNotEmpty) {
+                final success = await ApiService.recordEngagement(
+                  userId: _currentUserId,
+                  campaignId: campaignId,
+                  action: 'used',
+                );
+                
+                if (success) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('✅ Used promotion: ${promotion['title']}'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('❌ Failed to record promotion usage'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              }
             },
             child: const Text('Use Promotion'),
           ),
