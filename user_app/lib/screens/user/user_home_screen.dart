@@ -1,5 +1,8 @@
+
+
 import 'package:flutter/material.dart';
-import '../../services/api_service.dart';  // Add this import
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import '../../services/api_service.dart';
 
 class UserHomeScreen extends StatefulWidget {
   const UserHomeScreen({super.key});
@@ -9,105 +12,130 @@ class UserHomeScreen extends StatefulWidget {
 }
 
 class _UserHomeScreenState extends State<UserHomeScreen> {
+  GoogleMapController? _mapController;
   List<Map<String, dynamic>> _promotions = [];
   bool _isLoading = true;
   
+  // Test with different users by changing this ID
+  String _currentUserId = 'U0001';
+
   @override
   void initState() {
     super.initState();
     _loadPromotions();
   }
-  
+
   Future<void> _loadPromotions() async {
-    // Load real campaigns from your backend
-    final campaigns = await ApiService.getActiveCampaigns();
+    setState(() => _isLoading = true);
     
-    setState(() {
-      _promotions = campaigns;
-      _isLoading = false;
-    });
+    try {
+      final campaigns = await ApiService.getCampaignsForUser(_currentUserId);
+      setState(() {
+        _promotions = campaigns;
+        _isLoading = false;
+      });
+    } catch (e) {
+      print('Error loading promotions: $e');
+      setState(() => _isLoading = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: _isLoading 
-          ? const Center(child: CircularProgressIndicator())  // Show loading
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.center,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              // Header with user switcher
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    "Check out what's nearby you:",
-                    style: Theme.of(context).textTheme.titleLarge,
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 20),
-                  
-                  // Map placeholder (same as before)
-                  Container(
-                    height: 300,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey.shade300),
-                      color: Colors.grey.shade100,
-                    ),
-                    child: const Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.map, size: 48, color: Colors.grey),
-                          SizedBox(height: 16),
-                          Text('Map will appear here', 
-                               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.grey)),
-                          SizedBox(height: 8),
-                          Text('McKinney, TX area', style: TextStyle(color: Colors.grey)),
-                        ],
-                      ),
+                    'Check out what\'s nearby you',
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
-                  
-                  const SizedBox(height: 40),
-                  
-                  Text(
-                    'Discover Promotions Nearby',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  const SizedBox(height: 20),
-                  
-                  // Real campaigns from database
-                  SizedBox(
-                    height: 250,
-                    child: _promotions.isEmpty 
-                      ? const Center(child: Text('No promotions available'))
-                      : PageView.builder(
-                          controller: PageController(viewportFraction: 0.8),
-                          itemCount: _promotions.length,
-                          itemBuilder: (context, index) {
-                            final promo = _promotions[index];
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 8),
-                              child: PromotionCard(
-                                title: promo['title'] ?? 'Unknown Title',
-                                code: promo['code'] ?? 'NO-CODE',
-                                description: promo['description'] ?? 'No description',
-                                address: 'Vendor ${promo['vendor_id']}',  // We'll improve this later
-                                onTap: () => _openPromotionDetail(promo),
-                              ),
-                            );
-                          },
-                        ),
+                  PopupMenuButton<String>(
+                    icon: Icon(Icons.person, color: Colors.blue),
+                    onSelected: (String userId) {
+                      setState(() {
+                        _currentUserId = userId;
+                        _loadPromotions();
+                      });
+                    },
+                    itemBuilder: (context) => [
+                      const PopupMenuItem(value: 'U0001', child: Text('U0001')),
+                      const PopupMenuItem(value: 'U0002', child: Text('U0002')),
+                      const PopupMenuItem(value: 'U0003', child: Text('U0003')),
+                      const PopupMenuItem(value: 'U0004', child: Text('U0004')),
+                      const PopupMenuItem(value: 'U0005', child: Text('U0005')),
+                    ],
                   ),
                 ],
               ),
-            ),
+              const SizedBox(height: 20),
+              
+              // Google Maps widget at the top
+              SizedBox(
+                height: 300,
+                child: Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey.shade300),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: GoogleMap(
+                      onMapCreated: (GoogleMapController controller) {
+                        _mapController = controller;
+                      },
+                      initialCameraPosition: const CameraPosition(
+                        target: LatLng(33.1850, -96.6300), // McKinney area
+                        zoom: 13,
+                      ),
+                      markers: <Marker>{}, // Empty for now
+                    ),
+                  ),
+                ),
+              ),
+              
+              const SizedBox(height: 20),
+              
+              // Carousel of promotions
+              Expanded(
+                child: _isLoading 
+                  ? const Center(child: CircularProgressIndicator())
+                  : _promotions.isEmpty
+                    ? const Center(child: Text('No promotions available'))
+                    : PageView.builder(
+                        controller: PageController(viewportFraction: 0.8),
+                        itemCount: _promotions.length,
+                        itemBuilder: (context, index) {
+                          final promo = _promotions[index];
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            child: PromotionCard(
+                              title: promo['title'] ?? 'Unknown Title',
+                              code: promo['code'] ?? 'NO-CODE',
+                              description: promo['description'] ?? 'No description',
+                              // NOW USING REAL VENDOR ADDRESS FROM DATABASE
+                              address: promo['vendor_address'] ?? 'Address not available',
+                              onTap: () => _openPromotionDetail(promo),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
-  // Keep your existing _openPromotionDetail method
   void _openPromotionDetail(Map<String, dynamic> promotion) {
     showDialog(
       context: context,
@@ -117,10 +145,10 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Code: ${promotion['code']}', 
-                 style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text('Code: ${promotion['code']}',
+                style: const TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
-            Text('Vendor: ${promotion['vendor_id']}'),
+            Text('Location: ${promotion['vendor_address'] ?? 'N/A'}'),
             const SizedBox(height: 8),
             Text(promotion['description'] ?? 'No description'),
           ],
@@ -145,7 +173,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   }
 }
 
-// Keep your existing PromotionCard widget unchanged
+// Original PromotionCard widget (unchanged from your design)
 class PromotionCard extends StatelessWidget {
   final String title;
   final String code;

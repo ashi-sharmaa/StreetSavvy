@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 
 	"streetsavvy-backend/config"
 	"streetsavvy-backend/models"
@@ -36,9 +35,8 @@ func main() {
 
 	// api handlers (testing)
 	api.HandleFunc("/users/{id}", getUserHandler).Methods("GET")
-	//api.HandleFunc("/users/{id}/nearby", getNearbyPromsHandler).Methods("GET")
+	api.HandleFunc("/users/{id}/nearby-campaigns", getUserNearbyPromsHandler).Methods("GET")
 	api.HandleFunc("/campaigns/active", getActiveCampaignsHandler).Methods("GET")
-	api.HandleFunc("/campaigns/nearby", getNearbyPromsHandler).Methods("GET")
 	api.HandleFunc("/health", healthCheck).Methods("GET")
 
 	// Get port from environment or use default
@@ -159,101 +157,114 @@ func getActiveCampaignsHandler(w http.ResponseWriter, r *http.Request) {
     json.NewEncoder(w).Encode(campaigns)
 }
 
-func getNearbyPromsHandler(w http.ResponseWriter, r *http.Request) {
+
+
+func getUserNearbyPromsHandler(w http.ResponseWriter, r *http.Request) {
+	// Extract user ID from URL path
+	vars := mux.Vars(r)
+	userID := vars["id"]
+	log.Printf("Getting campaigns for user %s", userID)
+
+	// Step 1: Get user's latest location from user_location_events table
+	var userLat, userLng float64
+	locationQuery := `
+		SELECT lat, long FROM user_location_events
+		WHERE user_id = $1
+		ORDER BY event_time DESC
+		LIMIT 1`
 	
-		// Extract location parameters from query string
-		latStr := r.URL.Query().Get("lat")
-		lngStr := r.URL.Query().Get("lng")
-		radiusStr := r.URL.Query().Get("radius")
-		
-		// Validate required parameters
-		if latStr == "" || lngStr == "" {
-			http.Error(w, "Missing required parameters: lat, lng", http.StatusBadRequest)
-			return
-		}
-		
-		// Convert strings to numbers
-		lat, err := strconv.ParseFloat(latStr, 64)
-		if err != nil {
-			http.Error(w, "Invalid latitude", http.StatusBadRequest)
-			return
-		}
-		
-		lng, err := strconv.ParseFloat(lngStr, 64)
-		if err != nil {
-			http.Error(w, "Invalid longitude", http.StatusBadRequest)
-			return
-		}
-		
-		// Default radius to 1km if not provided
-		radius := 1.0
-		if radiusStr != "" {
-			radius, err = strconv.ParseFloat(radiusStr, 64)
-			if err != nil {
-				http.Error(w, "Invalid radius", http.StatusBadRequest)
-				return
-			}
-		}
-		
-		radiusMeters := int(radius * 1000)
-		
-		log.Printf("=== Searching near lat=%f, lng=%f, radius=%dkm ===", lat, lng, radiusMeters/1000)
-		
-		// Check current date and C0002 status first
-		var currentDate string
-		config.DB.QueryRow("SELECT CURRENT_DATE::text").Scan(&currentDate)
-		log.Printf("🔧 Current date: %s", currentDate)
-		
-		var c2ID, c2Start, c2End string
-		var c2Enabled bool
-		c2Err := config.DB.QueryRow("SELECT campaign_id, enabled, start_date::text, end_date::text FROM campaigns WHERE campaign_id = 'C0002'").Scan(&c2ID, &c2Enabled, &c2Start, &c2End)
-		if c2Err == nil {
-			log.Printf("🔧 C0002: enabled=%t, start=%s, end=%s", c2Enabled, c2Start, c2End)
-		}
-		
-		// Main geospatial query
-		query := `
-			SELECT c.campaign_id, c.vendor_id, c.title, c.code, c.description, c.geofence_radius_km
-			FROM campaigns c
-			JOIN vendors v ON c.vendor_id = v.vendor_id
-			WHERE c.enabled = true 
-			AND c.start_date <= CURRENT_DATE 
+	err := config.DB.QueryRow(locationQuery, userID).Scan(&userLat, &userLng)
+	if err != nil {
+		log.Printf("User %s location not found: %v", userID, err)
+		http.Error(w, "User location not found", http.StatusNotFound)
+		return
+	}
+	log.Printf("User %s is at location: lat=%f, lng=%f", userID, userLat, userLng)
+
+	// Step 2: Get campaigns with vendor address + segmentation + runtime + geofence logic
+	campaignQuery := `
+		SELECT 
+			c.campaign_id, 
+			c.vendor_id, 
+			c.title, 
+			c.code,
+			c.description, 
+			c.geofence_radius_km,
+			v.address,           
+			v.vendor_type,      
+			v.lat as vendor_lat, 
+			v.long as vendor_lng
+		FROM campaigns c
+		JOIN vendors v ON c.vendor_id = v.vendor_id
+		JOIN segments s ON c.segment_id = s.segment_id
+		JOIN users u ON u.user_id = $3
+		WHERE c.enabled = true
+			AND c.start_date <= CURRENT_DATE
 			AND c.end_date >= CURRENT_DATE
+			AND (
+				CURRENT_DATE > c.start_date OR
+				(CURRENT_DATE = c.start_date AND CURRENT_TIME >= c.run_time::time)
+			)
 			AND ST_DWithin(
 				ST_Transform(ST_SetSRID(ST_MakePoint(v.long, v.lat), 4326), 3857),
 				ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 3857),
-				$3
+				c.geofence_radius_km * 1000
+			)
+			AND (
+				s.segment_name = CONCAT('loyalty_tier_', u.loyalty_tier)
+				OR s.segment_name = CONCAT('most_frequent_vendor_type_', u.most_frequent_vendor_type)
+				OR s.segment_name = CONCAT('most_frequent_vendor_', u.most_frequent_vendor)
 			)`
-		
-		// Execute query
-		rows, err := config.DB.Query(query, lng, lat, radiusMeters)
-		if err != nil {
-			log.Printf("❌ Query error: %v", err)
-			http.Error(w, "Query failed", http.StatusInternalServerError)
-			return
-		}
-		defer rows.Close()
-		
-		// Collect results
-		var campaigns []models.Campaign
-		for rows.Next() {
-			var c models.Campaign
-			err := rows.Scan(&c.CampaignID, &c.VendorID, &c.Title, &c.Code, &c.Description, &c.GeofenceRadiusKm)
-			if err != nil {
-				log.Printf("❌ Scan error: %v", err)
-				continue
-			}
-			log.Printf("✅ Found campaign: %s (%s)", c.CampaignID, c.Title)
-			campaigns = append(campaigns, c)
-		}
-		
-		if err = rows.Err(); err != nil {
-			log.Printf("❌ Iteration error: %v", err)
-		}
-		
-		log.Printf("=== RESULT: %d campaigns found ===", len(campaigns))
-		
-		// Return results
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(campaigns)
+
+	// Execute with user's real location + user ID for segmentation
+	rows, err := config.DB.Query(campaignQuery, userLng, userLat, userID)
+	if err != nil {
+		log.Printf("Error executing campaign query for user %s: %v", userID, err)
+		http.Error(w, "Campaign query failed", http.StatusInternalServerError)
+		return
 	}
+	defer rows.Close()
+
+	// Custom struct for response with vendor information
+	type CampaignWithVendor struct {
+		CampaignID       string  `json:"campaign_id"`
+		VendorID         string  `json:"vendor_id"`
+		Title            string  `json:"title"`
+		Code             string  `json:"code"`
+		Description      string  `json:"description"`
+		GeofenceRadiusKm float64 `json:"geofence_radius_km"`
+		VendorAddress    string  `json:"vendor_address"`    // Real address from database
+		VendorType       string  `json:"vendor_type"`       // Vendor category
+		VendorLat        float64 `json:"vendor_lat"`        // For map markers
+		VendorLng        float64 `json:"vendor_lng"`        // For map markers
+	}
+
+	// Collect matching campaigns with vendor info
+	var campaigns []CampaignWithVendor
+	for rows.Next() {
+		var c CampaignWithVendor
+		err := rows.Scan(
+			&c.CampaignID, 
+			&c.VendorID, 
+			&c.Title,
+			&c.Code, 
+			&c.Description, 
+			&c.GeofenceRadiusKm,
+			&c.VendorAddress,    // Real vendor address
+			&c.VendorType,       // Real vendor type
+			&c.VendorLat,        // Real vendor coordinates
+			&c.VendorLng,
+		)
+		if err != nil {
+			log.Printf("Error scanning campaign: %v", err)
+			continue
+		}
+		log.Printf("✅ User %s matches campaign: %s at %s", userID, c.CampaignID, c.VendorAddress)
+		campaigns = append(campaigns, c)
+	}
+
+	log.Printf("Found %d matching campaigns for user %s", len(campaigns), userID)
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(campaigns)
+}
