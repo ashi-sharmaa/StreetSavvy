@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../services/api_service.dart';
 
 class VendorHomeScreen extends StatefulWidget {
   const VendorHomeScreen({super.key});
@@ -8,6 +9,47 @@ class VendorHomeScreen extends StatefulWidget {
 }
 
 class _VendorHomeScreenState extends State<VendorHomeScreen> {
+  // STATE VARIABLES: Data storage for the screen
+  List<Map<String, dynamic>> _campaigns = [];  // Stores campaign analytics from API
+  bool _isLoading = true;                       // Controls loading spinner
+  String _currentVendorId = 'V0001';           // Which vendor we're viewing
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCampaigns();  // Load data when screen first appears
+  }
+
+  // DATA LOADING: Fetch analytics from backend and extract campaigns
+  Future<void> _loadCampaigns() async {
+    setState(() => _isLoading = true);
+    
+    try {
+      // Get analytics data from backend (includes campaigns + summary)
+      final analyticsData = await VendorApiService.getVendorAnalytics(_currentVendorId);
+      
+      if (analyticsData != null) {
+        // Extract just the campaigns array from analytics response
+        final campaigns = VendorApiService.getCampaignsFromAnalytics(analyticsData);
+        setState(() {
+          _campaigns = campaigns;
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          _campaigns = [];
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      print('Error loading campaigns: $e');
+      setState(() {
+        _campaigns = [];
+        _isLoading = false;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -15,8 +57,9 @@ class _VendorHomeScreenState extends State<VendorHomeScreen> {
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Header with title
+              // TOP HEADER: Vendor Dashboard title + New Campaign button + Vendor switcher
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -26,122 +69,155 @@ class _VendorHomeScreenState extends State<VendorHomeScreen> {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  ElevatedButton.icon(
-                    onPressed: _createNewCampaign,
-                    icon: const Icon(Icons.add),
-                    label: const Text('New Campaign'),
+                  Row(
+                    children: [
+                      // VENDOR SWITCHER: Dropdown to test different vendors
+                      PopupMenuButton<String>(
+                        icon: const Icon(Icons.business),
+                        onSelected: (String vendorId) {
+                          setState(() {
+                            _currentVendorId = vendorId;
+                            _loadCampaigns();  // Reload data for new vendor
+                          });
+                        },
+                        itemBuilder: (context) => [
+                          const PopupMenuItem(value: 'V0001', child: Text('V0001 (Panera)')),
+                          const PopupMenuItem(value: 'V0002', child: Text('V0002 (Valero)')),
+                          const PopupMenuItem(value: 'V0003', child: Text('V0003 (Starbucks)')),
+                        ],
+                      ),
+                      const SizedBox(width: 8),
+                      // NEW CAMPAIGN BUTTON: Create campaign (placeholder)
+                      ElevatedButton(
+                        onPressed: _createNewCampaign,
+                        child: const Text('New Campaign'),
+                      ),
+                    ],
                   ),
                 ],
               ),
+              
               const SizedBox(height: 20),
               
+              // MAIN CONTENT: Two-column layout (Heatmap | Campaigns)
               Expanded(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Heatmap on the left
-                    Expanded(
-                      flex: 1,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                child: _isLoading 
+                  ? const Center(child: CircularProgressIndicator()) // LOADING STATE
+                  : Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // LEFT SIDE: Heatmap placeholder (unchanged from original)
+                        Expanded(
+                          flex: 1,  // Takes 50% of width
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                'Live Heatmap',
-                                style: Theme.of(context).textTheme.titleLarge,
+                              // HEATMAP HEADER: Title + Configure button
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    'Live Heatmap',
+                                    style: Theme.of(context).textTheme.titleLarge,
+                                  ),
+                                  TextButton.icon(
+                                    onPressed: _configureHeatmap,
+                                    icon: const Icon(Icons.settings),
+                                    label: const Text('Configure'),
+                                  ),
+                                ],
                               ),
-                              TextButton.icon(
-                                onPressed: _configureHeatmap,
-                                icon: const Icon(Icons.settings),
-                                label: const Text('Configure'),
+                              const SizedBox(height: 10),
+                              
+                              // HEATMAP PLACEHOLDER: Will be replaced with real heatmap later
+                              Expanded(
+                                child: Container(
+                                  width: double.infinity,
+                                  decoration: BoxDecoration(
+                                    border: Border.all(color: Colors.grey.shade300),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Center(
+                                    child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Icon(Icons.map, size: 48, color: Colors.grey),
+                                        SizedBox(height: 16),
+                                        Text(
+                                          'Heatmap Will Display Here',
+                                          style: TextStyle(
+                                            fontSize: 16, 
+                                            fontWeight: FontWeight.bold, 
+                                            color: Colors.grey
+                                          ),
+                                        ),
+                                        SizedBox(height: 8),
+                                        Text(
+                                          'Real-time user density around your location',
+                                          style: TextStyle(color: Colors.grey),
+                                          textAlign: TextAlign.center,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 10),
-                          Expanded(
-                            child: Container(
-                              width: double.infinity,
-                              decoration: BoxDecoration(
-                                border: Border.all(color: Colors.grey.shade300),
-                                borderRadius: BorderRadius.circular(12),
+                        ),
+                        
+                        const SizedBox(width: 24), // SPACING between columns
+                        
+                        // RIGHT SIDE: Campaign analytics (updated with real data)
+                        Expanded(
+                          flex: 1,  // Takes 50% of width
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // CAMPAIGNS HEADER: Shows count from API
+                              Text(
+                                'Your Campaigns (${_campaigns.length})',
+                                style: Theme.of(context).textTheme.titleLarge,
                               ),
-                              child: const Center(
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(
-                                      Icons.map,
-                                      size: 48,
-                                      color: Colors.grey,
+                              const SizedBox(height: 10),
+                              
+                              // CAMPAIGNS CAROUSEL: Real data from analytics API
+                              Expanded(
+                                child: _campaigns.isEmpty
+                                  ? const Center(
+                                      child: Text('No campaigns yet. Create your first campaign!')
+                                    )
+                                  : PageView.builder(
+                                      controller: PageController(viewportFraction: 0.85),
+                                      itemCount: _campaigns.length,
+                                      itemBuilder: (context, index) {
+                                        final campaign = _campaigns[index];
+                                        return Padding(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                                          child: CampaignCard(
+                                            // CAMPAIGN DATA: From analytics API response
+                                            title: campaign['title'] ?? 'Unknown Campaign',
+                                            code: campaign['code'] ?? 'NO-CODE',
+                                            description: 'Campaign analytics', // Simplified
+                                            address: 'Vendor $_currentVendorId',
+                                            isEnabled: campaign['enabled'] == true,
+                                            // ANALYTICS DATA: Real engagement metrics
+                                            engagementCount: campaign['total_clicks'] ?? 0,
+                                            usageCount: campaign['total_uses'] ?? 0,
+                                            // ACTION HANDLERS
+                                            onEdit: () => _editCampaign(campaign),
+                                            onToggle: () => _toggleCampaign(campaign),
+                                            onDelete: () => _deleteCampaign(campaign),
+                                          ),
+                                        );
+                                      },
                                     ),
-                                    SizedBox(height: 16),
-                                    Text(
-                                      'Heatmap Will Display Here',
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.grey,
-                                      ),
-                                    ),
-                                    SizedBox(height: 8),
-                                    Text(
-                                      'Real-time user density around your location',
-                                      style: TextStyle(color: Colors.grey),
-                                      textAlign: TextAlign.center,
-                                    ),
-                                  ],
-                                ),
                               ),
-                            ),
+                            ],
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
-                    
-                    const SizedBox(width: 24),
-                    
-                    // Campaigns on the right
-                    Expanded(
-                      flex: 1,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Your Campaigns',
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                          const SizedBox(height: 10),
-                          Expanded(
-                            child: PageView.builder(
-                              controller: PageController(viewportFraction: 0.85),
-                              itemCount: _campaigns.length,
-                              itemBuilder: (context, index) {
-                                final campaign = _campaigns[index];
-                                return Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                                  child: CampaignCard(
-                                    title: campaign['title']!,
-                                    code: campaign['code']!,
-                                    description: campaign['description']!,
-                                    address: campaign['address']!,
-                                    isEnabled: campaign['enabled'] == 'true',
-                                    engagementCount: int.parse(campaign['engagements'] ?? '0'),
-                                    usageCount: int.parse(campaign['usage'] ?? '0'),
-                                    onEdit: () => _editCampaign(campaign),
-                                    onToggle: () => _toggleCampaign(campaign),
-                                    onDelete: () => _deleteCampaign(campaign),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
               ),
             ],
           ),
@@ -150,15 +226,15 @@ class _VendorHomeScreenState extends State<VendorHomeScreen> {
     );
   }
 
+  // BUTTON HANDLERS: Action methods (mostly placeholders for now)
+
   void _createNewCampaign() {
-    // TODO: Navigate to campaign creation screen
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Create new campaign - Coming soon!')),
     );
   }
 
   void _configureHeatmap() {
-    // TODO: Show heatmap configuration dialog
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -174,22 +250,22 @@ class _VendorHomeScreenState extends State<VendorHomeScreen> {
     );
   }
 
-  void _editCampaign(Map<String, String> campaign) {
-    // TODO: Navigate to campaign edit screen
+  void _editCampaign(Map<String, dynamic> campaign) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Edit ${campaign['title']} - Coming soon!')),
     );
   }
 
-  void _toggleCampaign(Map<String, String> campaign) {
-    // TODO: Toggle campaign enabled state
+  void _toggleCampaign(Map<String, dynamic> campaign) {
+    final isEnabled = campaign['enabled'] == true;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Toggle ${campaign['title']} - Coming soon!')),
+      SnackBar(
+        content: Text('${isEnabled ? 'Disable' : 'Enable'} ${campaign['title']} - Coming soon!'),
+      ),
     );
   }
 
-  void _deleteCampaign(Map<String, String> campaign) {
-    // TODO: Delete campaign
+  void _deleteCampaign(Map<String, dynamic> campaign) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -215,254 +291,209 @@ class _VendorHomeScreenState extends State<VendorHomeScreen> {
   }
 }
 
+// CAMPAIGN CARD: Individual campaign display with analytics (FULL HEIGHT LAYOUT)
 class CampaignCard extends StatelessWidget {
   final String title;
   final String code;
-  final String address;
   final String description;
+  final String address;
   final bool isEnabled;
-  final int engagementCount;
-  final int usageCount;
-  final VoidCallback? onEdit;
-  final VoidCallback? onToggle;
-  final VoidCallback? onDelete;
+  final int engagementCount;    // Now shows real clicks from analytics
+  final int usageCount;         // Now shows real uses from analytics
+  final VoidCallback onEdit;
+  final VoidCallback onToggle;
+  final VoidCallback onDelete;
 
   const CampaignCard({
     super.key,
     required this.title,
     required this.code,
-    required this.address,
     required this.description,
+    required this.address,
     required this.isEnabled,
     required this.engagementCount,
     required this.usageCount,
-    this.onEdit,
-    this.onToggle,
-    this.onDelete,
+    required this.onEdit,
+    required this.onToggle,
+    required this.onDelete,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-      child: Card(
-        elevation: 3,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Title and status
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // CAMPAIGN HEADER: Title + Status indicator
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                // STATUS INDICATOR: Green for active, red for inactive
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isEnabled ? Colors.green : Colors.red,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    isEnabled ? 'ON' : 'OFF',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: isEnabled ? Colors.green : Colors.red,
-                      borderRadius: BorderRadius.circular(4),
+                ),
+              ],
+            ),
+            
+            const SizedBox(height: 12),
+            
+            // CAMPAIGN CODE: Blue chip showing code
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                code,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            
+            // SPACER: Pushes analytics and buttons toward the middle and bottom
+            const Spacer(flex: 1),
+            
+            // ANALYTICS DISPLAY: Real engagement metrics from API (EXPANDED TO FILL SPACE)
+            Expanded(
+              flex: 2, // Takes more space for better proportion
+              child: Row(
+                children: [
+                  // CLICKS METRIC: Shows total_clicks from analytics
+                  Expanded(
+                    child: Container(
+                      height: double.infinity, // Fills available height
+                      padding: const EdgeInsets.all(12), // Increased padding
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center, // Centers content vertically
+                        children: [
+                          const Icon(Icons.touch_app, color: Colors.blue, size: 28), // Larger icon
+                          const SizedBox(height: 8),
+                          Text(
+                            '$engagementCount',
+                            style: const TextStyle(
+                              fontSize: 24, // Larger number
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blue,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'Clicks',
+                            style: TextStyle(fontSize: 12, color: Colors.blue),
+                          ),
+                        ],
+                      ),
                     ),
-                    child: Text(
-                      isEnabled ? 'ON' : 'OFF',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
+                  ),
+                  
+                  const SizedBox(width: 12), // Increased spacing
+                  
+                  // USAGE METRIC: Shows total_uses from analytics
+                  Expanded(
+                    child: Container(
+                      height: double.infinity, // Fills available height
+                      padding: const EdgeInsets.all(12), // Increased padding
+                      decoration: BoxDecoration(
+                        color: Colors.green.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center, // Centers content vertically
+                        children: [
+                          const Icon(Icons.check_circle, color: Colors.green, size: 28), // Larger icon
+                          const SizedBox(height: 8),
+                          Text(
+                            '$usageCount',
+                            style: const TextStyle(
+                              fontSize: 24, // Larger number
+                              fontWeight: FontWeight.bold,
+                              color: Colors.green,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'Used',
+                            style: TextStyle(fontSize: 12, color: Colors.green),
+                          ),
+                        ],
                       ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 6),
-              
-              // Code
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 5),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.primary.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  code,
-                  style: theme.textTheme.labelMedium?.copyWith(
-                    color: theme.colorScheme.primary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              
-              // Address
-              Row(
-                children: [
-                  Icon(
-                    Icons.location_on,
-                    size: 12,
-                    color: theme.colorScheme.onSurface.withOpacity(0.6),
-                  ),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(
-                      address,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurface.withOpacity(0.6),
-                        fontSize: 10,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              
-              // Description
-              Expanded(
-                child: Text(
-                  description,
-                  style: theme.textTheme.bodySmall?.copyWith(fontSize: 11),
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              
-              // Engagement stats
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    Column(
-                      children: [
-                        Text(
-                          '$engagementCount',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                        const Text(
-                          'Clicks',
-                          style: TextStyle(fontSize: 10),
-                        ),
-                      ],
-                    ),
-                    Column(
-                      children: [
-                        Text(
-                          '$usageCount',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                        const Text(
-                          'Used',
-                          style: TextStyle(fontSize: 10),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              
-              // Action buttons
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  IconButton(
+            ),
+            
+            // SPACER: Pushes buttons to bottom
+            const Spacer(flex: 1),
+            
+            // ACTION BUTTONS: Edit, Toggle, Delete (AT BOTTOM OF CARD)
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
                     onPressed: onEdit,
-                    icon: const Icon(Icons.edit, size: 18),
-                    tooltip: 'Edit',
+                    icon: const Icon(Icons.edit, size: 16),
+                    label: const Text('Edit'),
                   ),
-                  IconButton(
+                ),
+                const SizedBox(width: 6), // Slightly more spacing
+                Expanded(
+                  child: OutlinedButton.icon(
                     onPressed: onToggle,
-                    icon: Icon(
-                      isEnabled ? Icons.toggle_on : Icons.toggle_off,
-                      size: 18,
-                      color: isEnabled ? Colors.green : Colors.grey,
-                    ),
-                    tooltip: isEnabled ? 'Disable' : 'Enable',
+                    icon: Icon(isEnabled ? Icons.pause : Icons.play_arrow, size: 16),
+                    label: Text(isEnabled ? 'Off' : 'On'),
                   ),
-                  IconButton(
+                ),
+                const SizedBox(width: 6), // Slightly more spacing
+                Expanded(
+                  child: OutlinedButton.icon(
                     onPressed: onDelete,
-                    icon: const Icon(Icons.delete, size: 18, color: Colors.red),
-                    tooltip: 'Delete',
+                    icon: const Icon(Icons.delete, size: 16),
+                    label: const Text('Del'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red,
+                    ),
                   ),
-                ],
-              ),
-            ],
-          ),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
   }
 }
-
-// Test data - will be replaced with API calls later
-final List<Map<String, String>> _campaigns = [
-  {
-    'title': '50% Off Coffee | Starbucks',
-    'code': 'COFFEE50',
-    'address': '123 Fairview Lane, Dallas, TX, 75001',
-    'description': 'Get 50% off your next coffee purchase at our downtown store.',
-    'enabled': 'true',
-    'engagements': '24',
-    'usage': '8',
-  },
-  {
-    'title': 'Free Shipping | CVS Photos',
-    'code': 'FREESHIP',
-    'address': '456 Main Street, Dallas, TX, 75002',
-    'description': 'Free shipping on all orders over \$50.',
-    'enabled': 'false',
-    'engagements': '12',
-    'usage': '3',
-  },
-  {
-    'title': 'Buy 1 Get 1 Free | 7-Eleven',
-    'code': 'B1G1',
-    'address': '789 Oak Avenue, Dallas, TX, 75003',
-    'description': 'Buy one snack and get one free, limited time offer.',
-    'enabled': 'true',
-    'engagements': '45',
-    'usage': '22',
-  },
-  {
-    'title': '20% Off Electronics | Best Buy',
-    'code': 'TECH20',
-    'address': '321 Technology Blvd, Dallas, TX, 75004',
-    'description': 'Save 20% on all electronics this weekend only.',
-    'enabled': 'true',
-    'engagements': '67',
-    'usage': '31',
-  },
-  {
-    'title': 'Free Appetizer | Chili\'s',
-    'code': 'FREEAPP',
-    'address': '654 Restaurant Row, Dallas, TX, 75005',
-    'description': 'Get a free appetizer with any entree purchase.',
-    'enabled': 'false',
-    'engagements': '18',
-    'usage': '9',
-  },
-];

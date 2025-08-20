@@ -14,7 +14,7 @@ class StreetSavvyUserApp extends StatelessWidget {
     return MaterialApp(
       title: 'StreetSavvy User',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
       home: const UserHomeScreen(),
