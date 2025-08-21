@@ -29,19 +29,15 @@ func main() {
 	// Create router
 	r := mux.NewRouter()
 
-	// Add CORS middleware for development
+	// CORS middleware for development
 	r.Use(corsMiddleware)
 
-	// API routes
-	api := r.PathPrefix("/api").Subrouter()
-
-	// api handlers (testing)
-	api.HandleFunc("/users/{id}", getUserHandler).Methods("GET")
-	api.HandleFunc("/users/{id}/nearby-campaigns", getUserNearbyPromsHandler).Methods("GET")
-	api.HandleFunc("/campaigns/active", getActiveCampaignsHandler).Methods("GET")
-	api.HandleFunc("/health", healthCheck).Methods("GET")
-	api.HandleFunc("/users/{user_id}/campaigns/{campaign_id}/engage", recordEngagementHandler).Methods("POST")
-	api.HandleFunc("/vendors/{vendor_id}/analytics", getVendorAnalyticsHandler).Methods("GET")
+	// API handlers
+	r.HandleFunc("/api/users/{id}", getUserHandler).Methods("GET")
+	r.HandleFunc("/api/users/{id}/nearby-campaigns", getUserNearbyPromsHandler).Methods("GET")
+	r.HandleFunc("/api/health", healthCheck).Methods("GET")
+	r.HandleFunc("/api/users/{user_id}/campaigns/{campaign_id}/engage", recordEngagementHandler).Methods("POST")
+	r.HandleFunc("/api/vendors/{vendor_id}/analytics", getVendorAnalyticsHandler).Methods("GET")
 
 	// Get port from environment or use default
 	port := os.Getenv("PORT")
@@ -50,21 +46,28 @@ func main() {
 	}
 
 	log.Printf("StreetSavvy Backend starting on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, r))
+	log.Fatal(http.ListenAndServe("127.0.0.1:8080", r))
 }
 
 // CORS middleware for development
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers for ALL requests (including OPTIONS)
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		
+		// Log ALL requests for debugging
+		log.Printf("🌐 %s %s from %s", r.Method, r.URL.Path, r.Header.Get("Origin"))
+		
+		// Handle preflight requests GLOBALLY
 		if r.Method == "OPTIONS" {
+			log.Printf("✅ Handling preflight request for %s", r.URL.Path)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-
+		
 		next.ServeHTTP(w, r)
 	})
 }
@@ -161,29 +164,19 @@ func getActiveCampaignsHandler(w http.ResponseWriter, r *http.Request) {
     json.NewEncoder(w).Encode(campaigns)
 }
 
-
-
 func getUserNearbyPromsHandler(w http.ResponseWriter, r *http.Request) {
 	// Extract user ID from URL path
 	vars := mux.Vars(r)
 	userID := vars["id"]
 	log.Printf("Getting campaigns for user %s", userID)
 
-	// Step 1: Get user's latest location from user_location_events table
-	var userLat, userLng float64
-	locationQuery := `
-		SELECT lat, long FROM user_location_events
-		WHERE user_id = $1
-		ORDER BY event_time DESC
-		LIMIT 1`
-	
-	err := config.DB.QueryRow(locationQuery, userID).Scan(&userLat, &userLng)
+	// Step 1: Get user's latest location
+	userLat, userLng, err := getUserCurrentLocation(userID)
 	if err != nil {
-		log.Printf("User %s location not found: %v", userID, err)
+		log.Printf("❌ %v", err)
 		http.Error(w, "User location not found", http.StatusNotFound)
 		return
 	}
-	log.Printf("User %s is at location: lat=%f, lng=%f", userID, userLat, userLng)
 
 	// Step 2: Get campaigns with vendor address + segmentation + runtime + geofence logic
 	campaignQuery := `
@@ -272,8 +265,6 @@ func getUserNearbyPromsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(campaigns)
 }
-
-
 
 // recordEngagementHandler handles user engagement with campaigns
 func recordEngagementHandler(w http.ResponseWriter, r *http.Request) {
@@ -490,7 +481,6 @@ func updateUserPreferences(userID string) {
 	}
 }
 
-
 // get engagement stats for a vendor's campaigns 
 func getVendorAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
 	// PART 1: Extract vendor ID from URL
@@ -500,32 +490,6 @@ func getVendorAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📊 Getting analytics for vendor %s", vendorID)
 	
 	// PART 2: Get individual campaign statistics (clicks and uses per campaign)
-	/*
-	CAMPAIGN ANALYTICS SQL BREAKDOWN:
-	
-	SELECT c.campaign_id, c.title, c.code, c.enabled,
-	This gets basic campaign info from the campaigns table
-	
-	COALESCE(clicks.total_clicks, 0) as total_clicks,
-	COALESCE uses clicks.total_clicks if it exists, otherwise 0
-	This handles campaigns with no engagements (prevents NULL)
-	
-	COALESCE(uses.total_uses, 0) as total_uses
-	Same for uses - prevents NULL values
-	
-	LEFT JOIN (...) clicks ON c.campaign_id = clicks.campaign_id
-	LEFT JOIN means: keep ALL campaigns, even if they have 0 engagements
-	INNER JOIN would only show campaigns that have engagements
-	
-	The subquery:
-	SELECT campaign_id, COUNT(*) as total_clicks
-	FROM campaign_user_engagements 
-	WHERE engagement_type = 'clicked'
-	GROUP BY campaign_id
-	
-	This counts how many 'clicked' records exist for each campaign
-	GROUP BY campaign_id means: separate count for each campaign
-	*/
 	campaignQuery := `
 		SELECT 
 			c.campaign_id,
@@ -616,62 +580,7 @@ func getVendorAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// PART 6: Get vendor-level statistics with PROPER SQL
-	/*
-	VENDOR OVERALL ANALYTICS SQL BREAKDOWN:
-	
-	COUNT(DISTINCT CASE WHEN engagement_type = 'clicked' THEN user_id END)
-	This counts unique users who clicked ANY campaign for this vendor
-	DISTINCT user_id ensures each user is counted only once
-	CASE WHEN filters to only count 'clicked' engagements
-	
-	COUNT(DISTINCT CASE WHEN engagement_type = 'used' THEN user_id END)  
-	Same for users who actually used any campaign
-	
-	COUNT(DISTINCT user_id)
-	Total unique users who had ANY engagement with this vendor
-	
-	The JOIN chain:
-	campaign_user_engagements -> campaigns -> vendors
-	This connects engagements to the vendor through campaigns
-	*/
-	var uniqueClickUsers, uniqueUseUsers, totalUniqueUsers int
-	
-	vendorStatsQuery := `
-		SELECT 
-			-- Unique users who clicked any campaign for this vendor
-			COUNT(DISTINCT CASE WHEN cue.engagement_type = 'clicked' THEN cue.user_id END) as unique_click_users,
-			-- Unique users who used any campaign for this vendor  
-			COUNT(DISTINCT CASE WHEN cue.engagement_type = 'used' THEN cue.user_id END) as unique_use_users,
-			-- Total unique users who engaged with this vendor (clicked OR used)
-			COUNT(DISTINCT cue.user_id) as total_unique_users
-		FROM campaign_user_engagements cue
-		JOIN campaigns c ON cue.campaign_id = c.campaign_id
-		WHERE c.vendor_id = $1`
-	
-	err = config.DB.QueryRow(vendorStatsQuery, vendorID).Scan(
-		&uniqueClickUsers, &uniqueUseUsers, &totalUniqueUsers)
-	
-	if err != nil {
-		// If no engagements exist, set to 0
-		if err == sql.ErrNoRows {
-			uniqueClickUsers = 0
-			uniqueUseUsers = 0
-			totalUniqueUsers = 0
-		} else {
-			log.Printf("❌ Error getting vendor stats: %v", err)
-			http.Error(w, "Failed to get vendor statistics", http.StatusInternalServerError)
-			return
-		}
-	}
-	
-	// PART 7: Calculate overall conversion rate for vendor
-	/*
-	CONVERSION RATE CALCULATION:
-	- If vendor has 0 total clicks: conversion = 0% (can't divide by 0)
-	- Otherwise: (total_uses / total_clicks) * 100
-	- Round to 1 decimal place for clean display
-	*/
+	// PART 6: Calculate overall conversion rate for vendor
 	var overallConversionRate float64
 	if vendorTotalClicks > 0 {
 		overallConversionRate = float64(vendorTotalUses) / float64(vendorTotalClicks) * 100
@@ -679,23 +588,41 @@ func getVendorAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
 		overallConversionRate = float64(int(overallConversionRate*10)) / 10
 	}
 	
-	// PART 8: Build clean response structure
+	// PART 7: Build clean response structure
 	response := map[string]interface{}{
 		"vendor_id": vendorID,
 		// VENDOR OVERALL METRICS (for dashboard summary)
 		"vendor_summary": map[string]interface{}{
 			"total_campaigns":        len(campaigns),
 			"overall_conversion_rate": overallConversionRate, // Percentage
-			"total_unique_users":     totalUniqueUsers,       // DISTINCT count across all campaigns
+			"total_unique_users":     0, // Simplified for now
 		},
 		// INDIVIDUAL CAMPAIGN METRICS (for campaign cards) 
 		"campaigns": campaigns, // Each has: campaign_id, title, code, enabled, total_clicks, total_uses
 	}
 	
-	log.Printf("✅ Vendor %s analytics: %d campaigns, %.1f%% conversion, %d unique users", 
-		vendorID, len(campaigns), overallConversionRate, totalUniqueUsers)
+	log.Printf("✅ Vendor %s analytics: %d campaigns, %.1f%% conversion", 
+		vendorID, len(campaigns), overallConversionRate)
 	
-	// PART 9: Return clean analytics
+	// PART 8: Return clean analytics
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// helper function for handlers to get curr location of a user 
+func getUserCurrentLocation(userID string) (float64, float64, error) {
+	var userLat, userLng float64
+	locationQuery := `
+		SELECT lat, long FROM user_location_events
+		WHERE user_id = $1
+		ORDER BY event_time DESC
+		LIMIT 1`
+	
+	err := config.DB.QueryRow(locationQuery, userID).Scan(&userLat, &userLng)
+	if err != nil {
+		return 0, 0, fmt.Errorf("user %s location not found: %v", userID, err)
+	}
+	
+	log.Printf("User %s is at location: lat=%f, lng=%f", userID, userLat, userLng)
+	return userLat, userLng, nil
 }
