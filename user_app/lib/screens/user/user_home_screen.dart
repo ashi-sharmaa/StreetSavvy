@@ -1,5 +1,5 @@
 // user_app/lib/screens/user/user_home_screen.dart
-// ORIGINAL WORKING VERSION - with popup that handles clicked vs used properly
+// FIXED: All syntax errors resolved
 
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -14,9 +14,11 @@ class UserHomeScreen extends StatefulWidget {
 
 class _UserHomeScreenState extends State<UserHomeScreen> {
   // DATA STORAGE
-  List<Map<String, dynamic>> _promotions = [];
+  List<Map<String, dynamic>> _promotions = [];              // Personalized recommendations
+  List<Map<String, dynamic>> _allCampaigns = [];            // All campaigns sorted by distance
   Map<String, dynamic>? _campaignsAndLocation;
   bool _isLoading = true;
+  bool _isLoadingAllCampaigns = false;                       // Loading state for distance list
   
   // SIMPLIFIED STATE: Only track which campaigns have revealed codes
   final Set<String> _usedCampaigns = <String>{}; // Just tracks: has user seen the promo code?
@@ -31,9 +33,10 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   void initState() {
     super.initState();
     _loadPromotions();
+    _loadAllCampaigns(); // Load distance-sorted campaigns
   }
 
-  /// LOAD PROMOTIONS: Gets campaigns and user location from backend
+  /// LOAD PROMOTIONS: Gets campaigns and user location from backend (UNCHANGED)
   Future<void> _loadPromotions() async {
     setState(() => _isLoading = true);
     
@@ -57,7 +60,27 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     }
   }
 
-  // SHOW MORE: Open full-screen popup and track click
+  // Load all campaigns sorted by distance
+  Future<void> _loadAllCampaigns() async {
+    setState(() => _isLoadingAllCampaigns = true);
+    
+    try {
+      final allCampaigns = await ApiService.getAllCampaignsSortedByDistance(_currentUserId);
+      
+      setState(() {
+        _allCampaigns = allCampaigns;
+        _isLoadingAllCampaigns = false;
+      });
+      
+      print('📱 Loaded ${_allCampaigns.length} distance-sorted campaigns for user $_currentUserId');
+      
+    } catch (e) {
+      print('💥 Error loading distance-sorted campaigns: $e');
+      setState(() => _isLoadingAllCampaigns = false);
+    }
+  }
+
+  // SHOW MORE: Open full-screen popup and track click (UNCHANGED)
   Future<void> _handleShowMore(Map<String, dynamic> promotion) async {
     final campaignId = promotion['campaign_id'];
     
@@ -76,7 +99,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     }
   }
 
-  // USE PROMOTION: Track usage and reveal code (NO SNACKBAR HERE)
+  // USE PROMOTION: Track usage and reveal code (UNCHANGED)
   Future<void> _handleUsePromotion(Map<String, dynamic> promotion) async {
     final campaignId = promotion['campaign_id'];
     
@@ -95,12 +118,9 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
       // NO SNACKBAR HERE - will show in popup instead
       print('✅ Recorded use for campaign: $campaignId');
     }
-    
-    // Return success status so popup can handle feedback
-    return; // We'll handle feedback in the popup
   }
 
-  // FULL-SCREEN PROMOTION DETAILS POPUP - HANDLES COMPLEXITY INTERNALLY
+  // FULL-SCREEN PROMOTION DETAILS POPUP (UNCHANGED)
   void _showPromotionDetailsPopup(Map<String, dynamic> promotion) {
     final campaignId = promotion['campaign_id'];
     
@@ -165,22 +185,35 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                   padding: const EdgeInsets.all(20),
                   child: Column(
                     children: [
-                      // VENDOR ADDRESS - CENTERED
+                      // VENDOR ADDRESS + DISTANCE - CENTERED
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           const Icon(Icons.location_on, color: Colors.grey),
                           const SizedBox(width: 8),
                           Flexible(
-                            child: Text(
-                              promotion['vendor_address'] ?? 'Address not available',
-                              style: const TextStyle(
-                                fontSize: 16,
-                                color: Colors.grey,
-                              ),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              textAlign: TextAlign.center,
+                            child: Column(
+                              children: [
+                                Text(
+                                  promotion['vendor_address'] ?? promotion['vendor_name'] ?? 'Address not available',
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    color: Colors.grey,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                                // Show distance in popup if available
+                                if (promotion['distance_display'] != null)
+                                  Text(
+                                    promotion['distance_display'],
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: _getDistanceColor(promotion['distance_meters']?.toDouble() ?? 0),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                              ],
                             ),
                           ),
                         ],
@@ -362,20 +395,136 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     );
   }
 
-  /// Center map on user's location (if available)
-  Future<void> _centerMapOnUser(Map<String, double> userLocation) async {
-    if (_mapController == null) return;
+  // Utility function for distance colors
+  Color _getDistanceColor(double distanceMeters) {
+    if (distanceMeters < 500) return Colors.green;     // Very close - walking
+    if (distanceMeters < 2000) return Colors.blue;     // Close - short drive  
+    if (distanceMeters < 5000) return Colors.orange;   // Moderate - longer drive
+    return Colors.red;                                  // Far - significant trip
+  }
+
+  // Build distance campaign card for the scrollable list
+  Widget _buildDistanceCampaignCard(Map<String, dynamic> campaign, int index) {
+    final distanceMeters = campaign['distance_meters']?.toDouble() ?? 0;
+    final distanceDisplay = campaign['distance_display'] ?? 'N/A';
     
-    await _mapController!.animateCamera(
-      CameraUpdate.newCameraPosition(
-        CameraPosition(
-          target: LatLng(userLocation['latitude']!, userLocation['longitude']!),
-          zoom: 14.0, // Closer zoom since we're centering on user
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Card(
+        elevation: 2,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: InkWell(
+          onTap: () => _handleShowMore(campaign),
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                // LEFT: Ranking number
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.blue.shade200),
+                  ),
+                  child: Center(
+                    child: Text(
+                      '${index + 1}',
+                      style: TextStyle(
+                        color: Colors.blue.shade700,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                ),
+                
+                const SizedBox(width: 16),
+                
+                // MIDDLE: Campaign info
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Campaign title
+                      Text(
+                        campaign['title'] ?? 'Unknown Campaign',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 6),
+                      
+                      // Vendor name
+                      Row(
+                        children: [
+                          const Icon(Icons.store, size: 14, color: Colors.grey),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              campaign['vendor_name'] ?? 'Unknown Vendor',
+                              style: const TextStyle(
+                                color: Colors.grey,
+                                fontSize: 14,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      
+                      // Code preview
+                      Text(
+                        'Code: ${campaign['code'] ?? 'N/A'}',
+                        style: TextStyle(
+                          color: Colors.blue.shade700,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                
+                const SizedBox(width: 16),
+                
+                // RIGHT: Distance with color coding
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _getDistanceColor(distanceMeters).withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: _getDistanceColor(distanceMeters).withOpacity(0.3),
+                    ),
+                  ),
+                  child: Text(
+                    distanceDisplay,
+                    style: TextStyle(
+                      color: _getDistanceColor(distanceMeters),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
-    
-    print('🎯 Centered map on user location: ${userLocation['latitude']}, ${userLocation['longitude']}');
   }
 
   @override
@@ -405,6 +554,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                             setState(() {
                               _currentUserId = userId;
                               _loadPromotions(); // Reload for new user
+                              _loadAllCampaigns(); // Also reload distance list
                             });
                           },
                           itemBuilder: (context) => [
@@ -419,21 +569,18 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                     ),
                     const SizedBox(height: 20),
 
-                    // PROMOTIONS SECTION: Shows campaign count from API
-                    Row(
-                      children: [
-                        Text(
-                          'Promotions (${_promotions.length})',
-                          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
+                    // PROMOTIONS SECTION - removed "on map"
+                    Text(
+                      'Promotions (${_promotions.length})',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                     const SizedBox(height: 12),
                     
-                    // CAMPAIGN CAROUSEL: Same layout as before
-                    Expanded(
+                    // CAMPAIGN CAROUSEL - Better responsive sizing
+                    SizedBox(
+                      height: 180, // Reduced from 200 to prevent overflow
                       child: _promotions.isEmpty
                           ? const Center(
                               child: Text(
@@ -445,12 +592,12 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                               ),
                             )
                           : PageView.builder(
-                              controller: PageController(viewportFraction: 0.8),
+                              controller: PageController(viewportFraction: 0.85), // Slightly larger cards
                               itemCount: _promotions.length,
                               itemBuilder: (context, index) {
                                 final promo = _promotions[index];
                                 return Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                                  padding: const EdgeInsets.symmetric(horizontal: 6), // Reduced padding
                                   child: PromotionCard(
                                     title: promo['title'] ?? 'Unknown Title',
                                     code: promo['code'] ?? 'NO-CODE',
@@ -462,6 +609,66 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                               },
                             ),
                     ),
+                    
+                    const SizedBox(height: 24),
+                    
+                    // ALL CAMPAIGNS SECTION (Distance-sorted)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'All Offers Near You',
+                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        // Show count
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.green.shade50,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.green.shade200),
+                          ),
+                          child: Text(
+                            '${_allCampaigns.length} nearby',
+                            style: TextStyle(
+                              color: Colors.green.shade700,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    
+                    // DISTANCE-SORTED SCROLLABLE LIST
+                    Expanded(
+                      child: _isLoadingAllCampaigns
+                          ? const Center(child: CircularProgressIndicator())
+                          : _allCampaigns.isEmpty
+                              ? const Center(
+                                  child: Text(
+                                    'No campaigns available nearby',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      color: Colors.grey,
+                                    ),
+                                  ),
+                                )
+                              : ListView.builder(
+                                  itemCount: _allCampaigns.length,
+                                  itemBuilder: (context, index) {
+                                    final campaign = _allCampaigns[index];
+                                    return _buildDistanceCampaignCard(campaign, index);
+                                  },
+                                ),
+                    ),
                   ],
                 ),
               ),
@@ -470,7 +677,7 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   }
 }
 
-// PROMOTION CARD: Same as before (no changes needed)
+// PROMOTION CARD - More responsive sizing
 class PromotionCard extends StatelessWidget {
   final String title;
   final String code;
@@ -495,37 +702,39 @@ class PromotionCard extends StatelessWidget {
       child: Card(
         elevation: 4,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 6), // Reduced vertical margin
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(14), // Reduced from 16
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
                 title,
-                style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+                style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold), // Slightly smaller
+                maxLines: 2, // Allow 2 lines for title
+                overflow: TextOverflow.ellipsis,
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 6), // Reduced spacing
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3), // Smaller padding
                 decoration: BoxDecoration(
                   color: theme.colorScheme.primary.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(
                   code,
-                  style: theme.textTheme.titleMedium?.copyWith(
+                  style: theme.textTheme.titleSmall?.copyWith( // Smaller text
                     color: theme.colorScheme.primary,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8), // Reduced spacing
               Row(
                 children: [
                   Icon(
                     Icons.location_on,
-                    size: 16,
+                    size: 14, // Smaller icon
                     color: theme.colorScheme.onSurface.withOpacity(0.6),
                   ),
                   const SizedBox(width: 4),
@@ -534,28 +743,36 @@ class PromotionCard extends StatelessWidget {
                       address,
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurface.withOpacity(0.6),
+                        fontSize: 11, // Smaller text
                       ),
-                      maxLines: 2,
+                      maxLines: 1, // Only 1 line for address
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8), // Reduced spacing
               Expanded(
                 child: Text(
                   description,
-                  style: theme.textTheme.bodyMedium,
-                  maxLines: 3,
+                  style: theme.textTheme.bodySmall?.copyWith(fontSize: 12), // Smaller text
+                  maxLines: 2, // Reduced to 2 lines
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              const SizedBox(height: 8),
+              // Removed bottom spacing and made button smaller
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton(
                   onPressed: onTap,
-                  child: const Text('Open'),
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size(60, 30), // Smaller button
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  ),
+                  child: const Text(
+                    'Open',
+                    style: TextStyle(fontSize: 12), // Smaller text
+                  ),
                 ),
               ),
             ],

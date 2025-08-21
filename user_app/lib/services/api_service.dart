@@ -143,4 +143,79 @@ class ApiService {
       return false;
     }
   }
+
+  // 🎯 NEW: Get all active campaigns sorted by distance from user
+  static Future<List<Map<String, dynamic>>> getAllCampaignsSortedByDistance(String userId) async {
+    try {
+      final url = '$baseUrl/users/$userId/campaigns/distance-sorted';
+      print('📱 Getting distance-sorted campaigns for user $userId');
+      
+      final response = await http.get(
+        Uri.parse(url),
+        headers: {'Content-Type': 'application/json'},
+      );
+
+      print('📱 Distance campaigns response: ${response.statusCode}');
+
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
+        final campaigns = data.cast<Map<String, dynamic>>();
+        
+        print('✅ Loaded ${campaigns.length} campaigns ordered by distance');
+        
+        // Log the first few campaigns with distances for debugging
+        for (int i = 0; i < (campaigns.length < 3 ? campaigns.length : 3); i++) {
+          final campaign = campaigns[i];
+          print('📍 ${campaign['vendor_name']}: ${campaign['distance_display']} away');
+        }
+        
+        return campaigns;
+      } else {
+        print('❌ Failed to load distance campaigns: ${response.statusCode}');
+        print('❌ Response body: ${response.body}');
+        return [];
+      }
+    } catch (e) {
+      print('💥 Error fetching distance campaigns: $e');
+      return [];
+    }
+  }
+
+  // 🎯 UTILITY: Get distance color for UI based on meters
+  static String getDistanceColorHex(double distanceMeters) {
+    if (distanceMeters < 500) return '#4CAF50';   // Green - very close
+    if (distanceMeters < 2000) return '#2196F3';  // Blue - close  
+    if (distanceMeters < 5000) return '#FF9800';  // Orange - moderate
+    return '#F44336';                              // Red - far
+  }
+
+  // 🎯 FIXED: Get user's current location separately (for debugging)
+  static Future<Map<String, double>?> getUserLocation(String userId) async {
+    try {
+      print('🌐 Fetching user location from: $baseUrl/users/$userId/location');
+      
+      final response = await http.get(
+        Uri.parse('$baseUrl/users/$userId/location'),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      );
+
+      print('📍 User location response: ${response.statusCode}');
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return {
+          'latitude': data['latitude'].toDouble(),
+          'longitude': data['longitude'].toDouble(),
+        };
+      } else {
+        print('❌ Failed to get user location: ${response.statusCode}');
+        return null;
+      }
+    } catch (e) {
+      print('💥 Error fetching user location: $e');
+      return null;
+    }
+  }
 }
