@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-//import 'package:google_maps_flutter/google_maps_flutter.dart';
+import '../../websocket_service.dart';
+import 'dart:async';
 import 'api_service.dart';
 
 class UserHomeScreen extends StatefulWidget {
@@ -16,6 +17,12 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
   Map<String, dynamic>? _campaignsAndLocation;
   bool _isLoading = true;
   bool _isLoadingAllCampaigns = false;
+
+// WEB SOCKET
+  final WebSocketService _webSocketService = WebSocketService();
+  StreamSubscription<Map<String, dynamic>>? _webSocketSubscription;
+  bool _isWebSocketConnected = false;
+
   
   // SIMPLIFIED STATE: Only track which campaigns have revealed codes
   final Set<String> _usedCampaigns = <String>{};
@@ -31,7 +38,37 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     super.initState();
     _loadPromotions();
     _loadAllCampaigns();
+     _connectWebSocket();
   }
+
+  @override
+  void dispose() {
+    _webSocketSubscription?.cancel();
+    _webSocketService.disconnect();
+    super.dispose();
+  }
+
+ // CONNECT TO WEB SOCKET: Establish connection and listen for messages
+  Future<void> _connectWebSocket() async {
+    final connected = await _webSocketService.connectUser(_currentUserId);
+    
+    setState(() {
+      _isWebSocketConnected = connected;
+    });
+    
+    if (connected) {
+      // Listen for incoming messages from the WebSocket
+      _webSocketSubscription = _webSocketService.messageStream?.listen(
+        (message) {
+          print('Received: ${message['type']}');
+          if (message['type'] == 'connected') {
+            print('WebSocket connected successfully!');
+          }
+        },
+      );
+    }
+  }
+
 
   /// LOAD PROMOTIONS: Gets campaigns and user location from backend
   Future<void> _loadPromotions() async {
