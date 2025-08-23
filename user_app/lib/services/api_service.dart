@@ -1,5 +1,3 @@
-// user_app/lib/services/api_service.dart
-// ORIGINAL WORKING VERSION - before CORS complexity
 
 import 'dart:convert';
 import 'package:http/http.dart' as http;
@@ -12,7 +10,7 @@ class ApiService {
   static Future<Map<String, dynamic>> getCampaignsAndLocationForUser(String userId) async {
     try {
       final url = '$baseUrl/users/$userId/nearby-campaigns';
-      print('🔍 Getting campaigns + location for user $userId');
+      print('Getting campaigns + location for user $userId');
       
       final response = await http.get(
         Uri.parse(url),
@@ -21,7 +19,7 @@ class ApiService {
 
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
-        print('✅ Found ${data.length} campaigns for $userId');
+        print('Found ${data.length} campaigns for $userId');
         
         // Process campaigns with vendor coordinates
         List<Map<String, dynamic>> processedCampaigns = [];
@@ -59,8 +57,8 @@ class ApiService {
           }
         }
         
-        print('🗺 Processed ${processedCampaigns.length} campaigns with coordinates');
-        print('📍 User location: ${userLocation?['latitude']}, ${userLocation?['longitude']}');
+        print('Processed ${processedCampaigns.length} campaigns with coordinates');
+        print('User location: ${userLocation?['latitude']}, ${userLocation?['longitude']}');
         
         return {
           'campaigns': processedCampaigns,
@@ -68,20 +66,20 @@ class ApiService {
         };
         
       } else if (response.statusCode == 404) {
-        print('❌ User $userId location not found in database');
+        print('User $userId location not found in database');
         return {
           'campaigns': <Map<String, dynamic>>[],
           'userLocation': {'latitude': 33.1850, 'longitude': -96.6300},
         };
       } else {
-        print('❌ Failed to load campaigns: ${response.statusCode}');
+        print('Failed to load campaigns: ${response.statusCode}');
         return {
           'campaigns': <Map<String, dynamic>>[],
           'userLocation': {'latitude': 33.1850, 'longitude': -96.6300},
         };
       }
     } catch (e) {
-      print('💥 Error fetching campaigns: $e');
+      print('Error fetching campaigns: $e');
       return {
         'campaigns': <Map<String, dynamic>>[],
         'userLocation': {'latitude': 33.1850, 'longitude': -96.6300},
@@ -105,7 +103,7 @@ class ApiService {
         };
       }
     } catch (e) {
-      print('💥 Error fetching user location: $e');
+      print('Error fetching user location: $e');
     }
     return null;
   }
@@ -118,7 +116,7 @@ class ApiService {
   }) async {
     try {
       final url = '$baseUrl/users/$userId/campaigns/$campaignId/engage';
-      print('📊 Recording engagement: $userId $action $campaignId');
+      print('Recording engagement: $userId $action $campaignId');
       
       final requestBody = {
         'action': action,
@@ -132,19 +130,19 @@ class ApiService {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        print('✅ Engagement recorded: ${data['message']}');
+        print('Engagement recorded: ${data['message']}');
         return true;
       } else {
-        print('❌ Failed to record engagement: ${response.statusCode}');
+        print('Failed to record engagement: ${response.statusCode}');
         return false;
       }
     } catch (e) {
-      print('💥 Error recording engagement: $e');
+      print('Error recording engagement: $e');
       return false;
     }
   }
 
-  // 🎯 NEW: Get all active campaigns sorted by distance from user
+
   static Future<List<Map<String, dynamic>>> getAllCampaignsSortedByDistance(String userId) async {
     try {
       final url = '$baseUrl/users/$userId/campaigns/distance-sorted';
@@ -155,33 +153,33 @@ class ApiService {
         headers: {'Content-Type': 'application/json'},
       );
 
-      print('📱 Distance campaigns response: ${response.statusCode}');
+      print('Distance campaigns response: ${response.statusCode}');
 
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
         final campaigns = data.cast<Map<String, dynamic>>();
         
-        print('✅ Loaded ${campaigns.length} campaigns ordered by distance');
+        print('Loaded ${campaigns.length} campaigns ordered by distance');
         
         // Log the first few campaigns with distances for debugging
         for (int i = 0; i < (campaigns.length < 3 ? campaigns.length : 3); i++) {
           final campaign = campaigns[i];
-          print('📍 ${campaign['vendor_name']}: ${campaign['distance_display']} away');
+          print('${campaign['vendor_name']}: ${campaign['distance_display']} away');
         }
         
         return campaigns;
       } else {
-        print('❌ Failed to load distance campaigns: ${response.statusCode}');
-        print('❌ Response body: ${response.body}');
+        print('Failed to load distance campaigns: ${response.statusCode}');
+        print('Response body: ${response.body}');
         return [];
       }
     } catch (e) {
-      print('💥 Error fetching distance campaigns: $e');
+      print('Error fetching distance campaigns: $e');
       return [];
     }
   }
 
-  // 🎯 UTILITY: Get distance color for UI based on meters
+  // UTILITY: Get distance color for UI based on meters
   static String getDistanceColorHex(double distanceMeters) {
     if (distanceMeters < 500) return '#4CAF50';   // Green - very close
     if (distanceMeters < 2000) return '#2196F3';  // Blue - close  
@@ -189,10 +187,10 @@ class ApiService {
     return '#F44336';                              // Red - far
   }
 
-  // 🎯 FIXED: Get user's current location separately (for debugging)
+  // Get user's current location separately (for debugging)
   static Future<Map<String, double>?> getUserLocation(String userId) async {
     try {
-      print('🌐 Fetching user location from: $baseUrl/users/$userId/location');
+      print('Fetching user location from: $baseUrl/users/$userId/location');
       
       final response = await http.get(
         Uri.parse('$baseUrl/users/$userId/location'),
@@ -201,7 +199,7 @@ class ApiService {
         },
       );
 
-      print('📍 User location response: ${response.statusCode}');
+      print('User location response: ${response.statusCode}');
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -210,11 +208,11 @@ class ApiService {
           'longitude': data['longitude'].toDouble(),
         };
       } else {
-        print('❌ Failed to get user location: ${response.statusCode}');
+        print('Failed to get user location: ${response.statusCode}');
         return null;
       }
     } catch (e) {
-      print('💥 Error fetching user location: $e');
+      print('Error fetching user location: $e');
       return null;
     }
   }

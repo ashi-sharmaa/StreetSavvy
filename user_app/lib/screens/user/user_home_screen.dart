@@ -1,5 +1,5 @@
 // user_app/lib/screens/user/user_home_screen.dart
-// FIXED: All syntax errors resolved
+// UPDATED: Added loyalty status bar at top
 
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -14,7 +14,28 @@ class UserHomeScreen extends StatefulWidget {
 
 class _UserHomeScreenState extends State<UserHomeScreen> {
   // DATA STORAGE
-  List<Map<String, dynamic>> _promotions = [];              // Personalized recommendations
+  List<Map<String, dynamic>> _promotions = [];              // Removed bottom spacing and made button smaller
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: onTap,
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size(60, 30), // Smaller button
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  ),
+                  child: const Text(
+                    'Open',
+                    style: TextStyle(fontSize: 12), // Smaller text
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+} Personalized recommendations
   List<Map<String, dynamic>> _allCampaigns = [];            // All campaigns sorted by distance
   Map<String, dynamic>? _campaignsAndLocation;
   bool _isLoading = true;
@@ -403,6 +424,78 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
     return Colors.red;                                  // Far - significant trip
   }
 
+  // Get current user's loyalty tier based on their ID
+  String _getCurrentUserLoyaltyTier() {
+    switch (_currentUserId) {
+      case 'U0001': return 'bronze';
+      case 'U0002': return 'silver';
+      case 'U0003': return 'gold';
+      case 'U0004': return 'bronze';
+      case 'U0005': return 'silver';
+      default: return 'bronze';
+    }
+  }
+
+  // Get loyalty tier color
+  Color _getLoyaltyColor(String tier) {
+    switch (tier) {
+      case 'bronze': return const Color(0xFFCD7F32);
+      case 'silver': return const Color(0xFFC0C0C0);
+      case 'gold': return const Color(0xFFFFD700);
+      default: return Colors.grey;
+    }
+  }
+
+  // Get loyalty tier gradient
+  LinearGradient _getLoyaltyGradient(String tier) {
+    switch (tier) {
+      case 'bronze':
+        return LinearGradient(
+          colors: [const Color(0xFFCD7F32), const Color(0xFFB8860B)],
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+        );
+      case 'silver':
+        return LinearGradient(
+          colors: [const Color(0xFFC0C0C0), const Color(0xFF808080)],
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+        );
+      case 'gold':
+        return LinearGradient(
+          colors: [const Color(0xFFFFD700), const Color(0xFFFFA500)],
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+        );
+      default:
+        return LinearGradient(
+          colors: [Colors.grey, Colors.grey.shade600],
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+        );
+    }
+  }
+
+  // Get loyalty tier icon
+  IconData _getLoyaltyIcon(String tier) {
+    switch (tier) {
+      case 'bronze': return Icons.workspace_premium;
+      case 'silver': return Icons.military_tech;
+      case 'gold': return Icons.diamond;
+      default: return Icons.person;
+    }
+  }
+
+  // Get loyalty tier description
+  String _getLoyaltyDescription(String tier) {
+    switch (tier) {
+      case 'bronze': return 'Starter benefits • Basic offers';
+      case 'silver': return 'Enhanced rewards • Priority deals';
+      case 'gold': return 'Premium perks • Exclusive access';
+      default: return 'Member benefits';
+    }
+  }
+
   // Build distance campaign card for the scrollable list
   Widget _buildDistanceCampaignCard(Map<String, dynamic> campaign, int index) {
     final distanceMeters = campaign['distance_meters']?.toDouble() ?? 0;
@@ -566,6 +659,68 @@ class _UserHomeScreenState extends State<UserHomeScreen> {
                           ],
                         ),
                       ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // USER LOYALTY STATUS BAR
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        gradient: _getLoyaltyGradient(_getCurrentUserLoyaltyTier()),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: _getLoyaltyColor(_getCurrentUserLoyaltyTier()).withOpacity(0.3),
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _getLoyaltyIcon(_getCurrentUserLoyaltyTier()),
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '$_currentUserId • ${_getCurrentUserLoyaltyTier().toUpperCase()} Member',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                Text(
+                                  _getLoyaltyDescription(_getCurrentUserLoyaltyTier()),
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '${_promotions.length} offers',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                     const SizedBox(height: 20),
 
@@ -760,25 +915,4 @@ class PromotionCard extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              // Removed bottom spacing and made button smaller
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: onTap,
-                  style: TextButton.styleFrom(
-                    minimumSize: const Size(60, 30), // Smaller button
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  ),
-                  child: const Text(
-                    'Open',
-                    style: TextStyle(fontSize: 12), // Smaller text
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
+              //
