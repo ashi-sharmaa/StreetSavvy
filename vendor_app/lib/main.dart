@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'screens/vendor/vendor_home_screen.dart';
+import 'vendor_home_screen.dart';
 
 void main() {
   runApp(const StreetSavvyVendorApp());

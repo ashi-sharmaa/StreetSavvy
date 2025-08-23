@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../../services/api_service.dart';
+import 'api_service.dart';
 
 class VendorHomeScreen extends StatefulWidget {
   const VendorHomeScreen({super.key});
@@ -10,41 +10,45 @@ class VendorHomeScreen extends StatefulWidget {
 
 class _VendorHomeScreenState extends State<VendorHomeScreen> {
   // STATE VARIABLES: Data storage for the screen
-  List<Map<String, dynamic>> _campaigns = [];  // Stores campaign analytics from API
-  bool _isLoading = true;                       // Controls loading spinner
-  String _currentVendorId = 'V0001';           // Which vendor we're viewing
+  List<Map<String, dynamic>> _campaigns = [];
+  Map<String, dynamic> _vendorSummary = {};
+  bool _isLoading = true;
+  String _currentVendorId = 'V0001';
 
   @override
   void initState() {
     super.initState();
-    _loadCampaigns();  // Load data when screen first appears
+    _loadAnalytics();
   }
 
-  // DATA LOADING: Fetch analytics from backend and extract campaigns
-  Future<void> _loadCampaigns() async {
+  // Enhanced data loading to get both campaigns and summary
+  Future<void> _loadAnalytics() async {
     setState(() => _isLoading = true);
     
     try {
-      // Get analytics data from backend (includes campaigns + summary)
       final analyticsData = await VendorApiService.getVendorAnalytics(_currentVendorId);
       
       if (analyticsData != null) {
-        // Extract just the campaigns array from analytics response
         final campaigns = VendorApiService.getCampaignsFromAnalytics(analyticsData);
+        final summary = VendorApiService.getVendorSummary(analyticsData);
+        
         setState(() {
           _campaigns = campaigns;
+          _vendorSummary = summary;
           _isLoading = false;
         });
       } else {
         setState(() {
           _campaigns = [];
+          _vendorSummary = {};
           _isLoading = false;
         });
       }
     } catch (e) {
-      print('Error loading campaigns: $e');
+      print('Error loading analytics: $e');
       setState(() {
         _campaigns = [];
+        _vendorSummary = {};
         _isLoading = false;
       });
     }
@@ -57,27 +61,36 @@ class _VendorHomeScreenState extends State<VendorHomeScreen> {
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // TOP HEADER: Vendor Dashboard title + New Campaign button + Vendor switcher
+              // TOP HEADER: Same as before
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    'Vendor Dashboard',
-                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Vendor Dashboard',
+                        style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        'Vendor $_currentVendorId Analytics',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                    ],
                   ),
                   Row(
                     children: [
-                      // VENDOR SWITCHER: Dropdown to test different vendors
                       PopupMenuButton<String>(
                         icon: const Icon(Icons.business),
                         onSelected: (String vendorId) {
                           setState(() {
                             _currentVendorId = vendorId;
-                            _loadCampaigns();  // Reload data for new vendor
+                            _loadAnalytics();
                           });
                         },
                         itemBuilder: (context) => [
@@ -87,7 +100,6 @@ class _VendorHomeScreenState extends State<VendorHomeScreen> {
                         ],
                       ),
                       const SizedBox(width: 8),
-                      // NEW CAMPAIGN BUTTON: Create campaign (placeholder)
                       ElevatedButton(
                         onPressed: _createNewCampaign,
                         child: const Text('New Campaign'),
@@ -99,89 +111,55 @@ class _VendorHomeScreenState extends State<VendorHomeScreen> {
               
               const SizedBox(height: 20),
               
-              // MAIN CONTENT: Two-column layout (Heatmap | Campaigns)
+              // MAIN CONTENT: Enhanced layout
               Expanded(
                 child: _isLoading 
-                  ? const Center(child: CircularProgressIndicator()) // LOADING STATE
+                  ? const Center(child: CircularProgressIndicator())
                   : Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // LEFT SIDE: Heatmap placeholder (unchanged from original)
+                        // LEFT SIDE: Analytics Dashboard (replaces heatmap)
                         Expanded(
-                          flex: 1,  // Takes 50% of width
+                          flex: 1,
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              // HEATMAP HEADER: Title + Configure button
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(
-                                    'Live Heatmap',
-                                    style: Theme.of(context).textTheme.titleLarge,
-                                  ),
-                                  TextButton.icon(
-                                    onPressed: _configureHeatmap,
-                                    icon: const Icon(Icons.settings),
-                                    label: const Text('Configure'),
-                                  ),
-                                ],
+                              Text(
+                                'Performance Analytics',
+                                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
-                              const SizedBox(height: 10),
+                              const SizedBox(height: 16),
                               
-                              // HEATMAP PLACEHOLDER: Will be replaced with real heatmap later
+                              // ANALYTICS DASHBOARD
                               Expanded(
-                                child: Container(
-                                  width: double.infinity,
-                                  decoration: BoxDecoration(
-                                    border: Border.all(color: Colors.grey.shade300),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: const Center(
-                                    child: Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        Icon(Icons.map, size: 48, color: Colors.grey),
-                                        SizedBox(height: 16),
-                                        Text(
-                                          'Heatmap Will Display Here',
-                                          style: TextStyle(
-                                            fontSize: 16, 
-                                            fontWeight: FontWeight.bold, 
-                                            color: Colors.grey
-                                          ),
-                                        ),
-                                        SizedBox(height: 8),
-                                        Text(
-                                          'Real-time user density around your location',
-                                          style: TextStyle(color: Colors.grey),
-                                          textAlign: TextAlign.center,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
+                                child: AnalyticsDashboard(
+                                  vendorSummary: _vendorSummary,
+                                  campaigns: _campaigns,
+                                  vendorId: _currentVendorId,
                                 ),
                               ),
                             ],
                           ),
                         ),
                         
-                        const SizedBox(width: 24), // SPACING between columns
+                        const SizedBox(width: 24),
                         
-                        // RIGHT SIDE: Campaign analytics (updated with real data)
+                        // RIGHT SIDE: Campaign cards (same as before)
                         Expanded(
-                          flex: 1,  // Takes 50% of width
+                          flex: 1,
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              // CAMPAIGNS HEADER: Shows count from API
                               Text(
                                 'Your Campaigns (${_campaigns.length})',
-                                style: Theme.of(context).textTheme.titleLarge,
+                                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
-                              const SizedBox(height: 10),
+                              const SizedBox(height: 16),
                               
-                              // CAMPAIGNS CAROUSEL: Real data from analytics API
                               Expanded(
                                 child: _campaigns.isEmpty
                                   ? const Center(
@@ -195,16 +173,13 @@ class _VendorHomeScreenState extends State<VendorHomeScreen> {
                                         return Padding(
                                           padding: const EdgeInsets.symmetric(horizontal: 8),
                                           child: CampaignCard(
-                                            // CAMPAIGN DATA: From analytics API response
                                             title: campaign['title'] ?? 'Unknown Campaign',
                                             code: campaign['code'] ?? 'NO-CODE',
-                                            description: 'Campaign analytics', // Simplified
+                                            description: 'Campaign analytics',
                                             address: 'Vendor $_currentVendorId',
                                             isEnabled: campaign['enabled'] == true,
-                                            // ANALYTICS DATA: Real engagement metrics
                                             engagementCount: campaign['total_clicks'] ?? 0,
                                             usageCount: campaign['total_uses'] ?? 0,
-                                            // ACTION HANDLERS
                                             onEdit: () => _editCampaign(campaign),
                                             onToggle: () => _toggleCampaign(campaign),
                                             onDelete: () => _deleteCampaign(campaign),
@@ -226,27 +201,10 @@ class _VendorHomeScreenState extends State<VendorHomeScreen> {
     );
   }
 
-  // BUTTON HANDLERS: Action methods (mostly placeholders for now)
-
+  // Button handlers (same as before)
   void _createNewCampaign() {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Create new campaign - Coming soon!')),
-    );
-  }
-
-  void _configureHeatmap() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Heatmap Configuration'),
-        content: const Text('Configure colors and density thresholds - Coming soon!'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
     );
   }
 
@@ -291,15 +249,292 @@ class _VendorHomeScreenState extends State<VendorHomeScreen> {
   }
 }
 
-// CAMPAIGN CARD: Individual campaign display with analytics (FULL HEIGHT LAYOUT)
+// NEW: Analytics Dashboard Widget
+class AnalyticsDashboard extends StatelessWidget {
+  final Map<String, dynamic> vendorSummary;
+  final List<Map<String, dynamic>> campaigns;
+  final String vendorId;
+
+  const AnalyticsDashboard({
+    super.key,
+    required this.vendorSummary,
+    required this.campaigns,
+    required this.vendorId,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Calculate totals
+    final totalClicks = campaigns.fold<int>(0, (int sum, Map<String, dynamic> c) => sum + ((c['total_clicks'] as int?) ?? 0));
+    final totalUses = campaigns.fold<int>(0, (int sum, Map<String, dynamic> c) => sum + ((c['total_uses'] as int?) ?? 0));
+    final conversionRate = vendorSummary['overall_conversion_rate'] ?? 0.0;
+    
+    return Column(
+      children: [
+        // OVERVIEW METRICS ROW
+        Row(
+          children: [
+            Expanded(
+              child: MetricCard(
+                title: 'Total Clicks',
+                value: '$totalClicks',
+                icon: Icons.touch_app,
+                color: Colors.blue,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: MetricCard(
+                title: 'Total Uses',
+                value: '$totalUses',
+                icon: Icons.check_circle,
+                color: Colors.green,
+              ),
+            ),
+          ],
+        ),
+        
+        const SizedBox(height: 16),
+        
+        // CONVERSION RATE CARD
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Colors.purple.shade400, Colors.purple.shade600],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            children: [
+              const Icon(Icons.trending_up, color: Colors.white, size: 28),
+              const SizedBox(height: 8),
+              Text(
+                '${conversionRate.toStringAsFixed(1)}%',
+                style: const TextStyle(
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+              const Text(
+                'Conversion Rate',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.white70,
+                ),
+              ),
+            ],
+          ),
+        ),
+        
+        const SizedBox(height: 16),
+        
+        // CAMPAIGN PERFORMANCE LIST
+        Text(
+          'Campaign Breakdown',
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 12),
+        
+        Expanded(
+          child: campaigns.isEmpty
+            ? const Center(
+                child: Text(
+                  'No campaign data available',
+                  style: TextStyle(color: Colors.grey),
+                ),
+              )
+            : ListView.builder(
+                itemCount: campaigns.length,
+                itemBuilder: (context, index) {
+                  final campaign = campaigns[index];
+                  return CampaignPerformanceItem(campaign: campaign);
+                },
+              ),
+        ),
+      ],
+    );
+  }
+}
+
+// Metric Card Widget
+class MetricCard extends StatelessWidget {
+  final String title;
+  final String value;
+  final IconData icon;
+  final Color color;
+
+  const MetricCard({
+    super.key,
+    required this.title,
+    required this.value,
+    required this.icon,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 24),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 12,
+              color: color,
+              fontWeight: FontWeight.w500,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Campaign Performance Item
+class CampaignPerformanceItem extends StatelessWidget {
+  final Map<String, dynamic> campaign;
+
+  const CampaignPerformanceItem({
+    super.key,
+    required this.campaign,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final clicks = campaign['total_clicks'] ?? 0;
+    final uses = campaign['total_uses'] ?? 0;
+    final conversionRate = clicks > 0 ? (uses / clicks * 100) : 0.0;
+    final isEnabled = campaign['enabled'] == true;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade200),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.shade100,
+            blurRadius: 2,
+            offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          // Status indicator
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: isEnabled ? Colors.green : Colors.red,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 12),
+          
+          // Campaign info
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  campaign['title'] ?? 'Unknown',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Code: ${campaign['code'] ?? 'N/A'}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          
+          // Metrics
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '$clicks',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blue,
+                    ),
+                  ),
+                  const Text(' / ', style: TextStyle(color: Colors.grey)),
+                  Text(
+                    '$uses',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.green,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '${conversionRate.toStringAsFixed(1)}%',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey[600],
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Campaign Card (same as before, keeping your existing implementation)
 class CampaignCard extends StatelessWidget {
   final String title;
   final String code;
   final String description;
   final String address;
   final bool isEnabled;
-  final int engagementCount;    // Now shows real clicks from analytics
-  final int usageCount;         // Now shows real uses from analytics
+  final int engagementCount;
+  final int usageCount;
   final VoidCallback onEdit;
   final VoidCallback onToggle;
   final VoidCallback onDelete;
@@ -330,7 +565,6 @@ class CampaignCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // CAMPAIGN HEADER: Title + Status indicator
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -343,7 +577,6 @@ class CampaignCard extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                // STATUS INDICATOR: Green for active, red for inactive
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
@@ -364,7 +597,6 @@ class CampaignCard extends StatelessWidget {
             
             const SizedBox(height: 12),
             
-            // CAMPAIGN CODE: Blue chip showing code
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
@@ -380,32 +612,29 @@ class CampaignCard extends StatelessWidget {
               ),
             ),
             
-            // SPACER: Pushes analytics and buttons toward the middle and bottom
             const Spacer(flex: 1),
             
-            // ANALYTICS DISPLAY: Real engagement metrics from API (EXPANDED TO FILL SPACE)
             Expanded(
-              flex: 2, // Takes more space for better proportion
+              flex: 2,
               child: Row(
                 children: [
-                  // CLICKS METRIC: Shows total_clicks from analytics
                   Expanded(
                     child: Container(
-                      height: double.infinity, // Fills available height
-                      padding: const EdgeInsets.all(12), // Increased padding
+                      height: double.infinity,
+                      padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         color: Colors.blue.shade50,
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center, // Centers content vertically
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          const Icon(Icons.touch_app, color: Colors.blue, size: 28), // Larger icon
+                          const Icon(Icons.touch_app, color: Colors.blue, size: 28),
                           const SizedBox(height: 8),
                           Text(
                             '$engagementCount',
                             style: const TextStyle(
-                              fontSize: 24, // Larger number
+                              fontSize: 24,
                               fontWeight: FontWeight.bold,
                               color: Colors.blue,
                             ),
@@ -420,26 +649,25 @@ class CampaignCard extends StatelessWidget {
                     ),
                   ),
                   
-                  const SizedBox(width: 12), // Increased spacing
+                  const SizedBox(width: 12),
                   
-                  // USAGE METRIC: Shows total_uses from analytics
                   Expanded(
                     child: Container(
-                      height: double.infinity, // Fills available height
-                      padding: const EdgeInsets.all(12), // Increased padding
+                      height: double.infinity,
+                      padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         color: Colors.green.shade50,
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center, // Centers content vertically
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          const Icon(Icons.check_circle, color: Colors.green, size: 28), // Larger icon
+                          const Icon(Icons.check_circle, color: Colors.green, size: 28),
                           const SizedBox(height: 8),
                           Text(
                             '$usageCount',
                             style: const TextStyle(
-                              fontSize: 24, // Larger number
+                              fontSize: 24,
                               fontWeight: FontWeight.bold,
                               color: Colors.green,
                             ),
@@ -457,10 +685,8 @@ class CampaignCard extends StatelessWidget {
               ),
             ),
             
-            // SPACER: Pushes buttons to bottom
             const Spacer(flex: 1),
             
-            // ACTION BUTTONS: Edit, Toggle, Delete (AT BOTTOM OF CARD)
             Row(
               children: [
                 Expanded(
@@ -470,7 +696,7 @@ class CampaignCard extends StatelessWidget {
                     label: const Text('Edit'),
                   ),
                 ),
-                const SizedBox(width: 6), // Slightly more spacing
+                const SizedBox(width: 6),
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: onToggle,
@@ -478,7 +704,7 @@ class CampaignCard extends StatelessWidget {
                     label: Text(isEnabled ? 'Off' : 'On'),
                   ),
                 ),
-                const SizedBox(width: 6), // Slightly more spacing
+                const SizedBox(width: 6),
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: onDelete,
