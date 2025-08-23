@@ -1,6 +1,6 @@
 
 import 'package:flutter/material.dart';
-import 'screens/user/user_home_screen.dart';
+import 'user_home_screen.dart';
 
 void main() {
   runApp(const StreetSavvyUserApp());
