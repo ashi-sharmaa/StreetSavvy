@@ -13,7 +13,39 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
+
+	"github.com/gorilla/websocket"
+    "sync"
+    "time"
 )
+
+// WebSocket connection manager to handle incoming connections
+type ConnectionManager struct {
+	userConnections   map[string]*websocket.Conn
+	vendorConnections map[string]*websocket.Conn
+	mutex sync.RWMutex
+}
+
+var connManager = &ConnectionManager{
+	userConnections:   make(map[string]*websocket.Conn),
+	vendorConnections: make(map[string]*websocket.Conn),
+}
+
+// WebSocket upgrader to handle connection upgrades
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true // Allow all origins for development
+	},
+}
+// WSMessage represents a message sent over WebSocket
+type WSMessage struct {
+	Type     string      `json:"type"`
+	Data     interface{} `json:"data"`
+	UserID   string      `json:"user_id,omitempty"`
+	VendorID string      `json:"vendor_id,omitempty"`
+}
+
+
 
 func main() {
 	// Load environment variables
@@ -35,9 +67,15 @@ func main() {
 	// API handlers
 	r.HandleFunc("/api/users/{id}", getUserHandler).Methods("GET")
 	r.HandleFunc("/api/users/{id}/nearby-campaigns", getUserNearbyPromsHandler).Methods("GET")
+	r.HandleFunc("/api/users/{id}/location", getUserLocationHandler).Methods("GET")  // 🎯 ADDED: Missing endpoint
 	r.HandleFunc("/api/health", healthCheck).Methods("GET")
 	r.HandleFunc("/api/users/{user_id}/campaigns/{campaign_id}/engage", recordEngagementHandler).Methods("POST")
 	r.HandleFunc("/api/vendors/{vendor_id}/analytics", getVendorAnalyticsHandler).Methods("GET")
+	r.HandleFunc("/api/users/{user_id}/campaigns/distance-sorted", getAllActiveCampaignsWithDistanceHandler).Methods("GET")
+
+	// WebSocket handlers
+	r.HandleFunc("/ws/user/{user_id}", handleUserWebSocket)
+	r.HandleFunc("/ws/vendor/{vendor_id}", handleVendorWebSocket)
 
 	// Get port from environment or use default
 	port := os.Getenv("PORT")
@@ -59,11 +97,11 @@ func corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		
 		// Log ALL requests for debugging
-		log.Printf("🌐 %s %s from %s", r.Method, r.URL.Path, r.Header.Get("Origin"))
+		log.Printf("%s %s from %s", r.Method, r.URL.Path, r.Header.Get("Origin"))
 		
 		// Handle preflight requests GLOBALLY
 		if r.Method == "OPTIONS" {
-			log.Printf("✅ Handling preflight request for %s", r.URL.Path)
+			log.Printf("Handling preflight request for %s", r.URL.Path)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -173,12 +211,13 @@ func getUserNearbyPromsHandler(w http.ResponseWriter, r *http.Request) {
 	// Step 1: Get user's latest location
 	userLat, userLng, err := getUserCurrentLocation(userID)
 	if err != nil {
-		log.Printf("❌ %v", err)
+		log.Printf("%v", err)
 		http.Error(w, "User location not found", http.StatusNotFound)
 		return
 	}
 
 	// Step 2: Get campaigns with vendor address + segmentation + runtime + geofence logic
+	// FIXED: Correct parameter order - userID first, then coordinates
 	campaignQuery := `
 		SELECT 
 			c.campaign_id, 
@@ -194,7 +233,7 @@ func getUserNearbyPromsHandler(w http.ResponseWriter, r *http.Request) {
 		FROM campaigns c
 		JOIN vendors v ON c.vendor_id = v.vendor_id
 		JOIN segments s ON c.segment_id = s.segment_id
-		JOIN users u ON u.user_id = $3
+		JOIN users u ON u.user_id = $1
 		WHERE c.enabled = true
 			AND c.start_date <= CURRENT_DATE
 			AND c.end_date >= CURRENT_DATE
@@ -204,7 +243,7 @@ func getUserNearbyPromsHandler(w http.ResponseWriter, r *http.Request) {
 			)
 			AND ST_DWithin(
 				ST_Transform(ST_SetSRID(ST_MakePoint(v.long, v.lat), 4326), 3857),
-				ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 3857),
+				ST_Transform(ST_SetSRID(ST_MakePoint($2, $3), 4326), 3857),
 				c.geofence_radius_km * 1000
 			)
 			AND (
@@ -213,8 +252,8 @@ func getUserNearbyPromsHandler(w http.ResponseWriter, r *http.Request) {
 				OR s.segment_name = CONCAT('most_frequent_vendor_', u.most_frequent_vendor)
 			)`
 
-	// Execute with user's real location + user ID for segmentation
-	rows, err := config.DB.Query(campaignQuery, userLng, userLat, userID)
+	// FIXED: Execute with correct parameter order - userID, lng, lat
+	rows, err := config.DB.Query(campaignQuery, userID, userLng, userLat)
 	if err != nil {
 		log.Printf("Error executing campaign query for user %s: %v", userID, err)
 		http.Error(w, "Campaign query failed", http.StatusInternalServerError)
@@ -256,7 +295,7 @@ func getUserNearbyPromsHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Error scanning campaign: %v", err)
 			continue
 		}
-		log.Printf("✅ User %s matches campaign: %s at %s", userID, c.CampaignID, c.VendorAddress)
+		log.Printf("User %s matches campaign: %s at %s", userID, c.CampaignID, c.VendorAddress)
 		campaigns = append(campaigns, c)
 	}
 
@@ -273,7 +312,7 @@ func recordEngagementHandler(w http.ResponseWriter, r *http.Request) {
 	userID := vars["user_id"]
 	campaignID := vars["campaign_id"]
 	
-	log.Printf("🎯 Recording engagement: user=%s, campaign=%s", userID, campaignID)
+	log.Printf("Recording engagement: user=%s, campaign=%s", userID, campaignID)
 	
 	// PART 2: Parse request body (keeping struct for clarity)
 	type EngagementRequest struct {
@@ -283,14 +322,14 @@ func recordEngagementHandler(w http.ResponseWriter, r *http.Request) {
 	var req EngagementRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
-		log.Printf("❌ Error parsing request: %v", err)
+		log.Printf("Error parsing request: %v", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 	
 	// PART 3: Validate action
 	if req.Action != "clicked" && req.Action != "used" {
-		log.Printf("❌ Invalid action: %s", req.Action)
+		log.Printf("Invalid action: %s", req.Action)
 		http.Error(w, "Action must be 'clicked' or 'used'", http.StatusBadRequest)
 		return
 	}
@@ -305,12 +344,11 @@ func recordEngagementHandler(w http.ResponseWriter, r *http.Request) {
 	
 	err = config.DB.QueryRow(locationQuery, userID).Scan(&userLat, &userLng)
 	if err != nil {
-		log.Printf("❌ User %s location not found: %v", userID, err)
+		log.Printf("User %s location not found: %v", userID, err)
 		http.Error(w, "User location not found", http.StatusNotFound)
 		return
 	}
-	
-	log.Printf("📍 User %s location: lat=%f, lng=%f", userID, userLat, userLng)
+	log.Printf("User %s location: lat=%f, lng=%f", userID, userLat, userLng)
 	
 	// PART 5: Check for duplicate engagement (updated for new schema)
 var duplicateCheck int
@@ -337,13 +375,13 @@ if req.Action == "clicked" {
 
 err = config.DB.QueryRow(checkQuery, userID, campaignID).Scan(&duplicateCheck)
 if err != nil {
-    log.Printf("❌ Error checking duplicates: %v", err)
+    log.Printf("Error checking duplicates: %v", err)
     http.Error(w, "Database error", http.StatusInternalServerError)
     return
 }
 
 if duplicateCheck > 0 {
-    log.Printf("⏭️ Duplicate %s engagement ignored (already %s %s)", 
+    log.Printf(" Duplicate %s engagement ignored (already %s %s)", 
         req.Action, req.Action, timeWindow)
     
     response := map[string]interface{}{
@@ -364,12 +402,12 @@ insertQuery := `
 
 _, err = config.DB.Exec(insertQuery, userID, campaignID, req.Action, userLat, userLng)
 if err != nil {
-    log.Printf("❌ Error inserting engagement: %v", err)
+    log.Printf("Error inserting engagement: %v", err)
     http.Error(w, "Failed to record engagement", http.StatusInternalServerError)
     return
 }
 
-log.Printf("✅ Inserted new %s engagement: user=%s, campaign=%s", 
+log.Printf("Inserted new %s engagement: user=%s, campaign=%s", 
     req.Action, userID, campaignID)
 	
 	// PART 7: Update user preferences based on engagement frequency (OPTIONAL)
@@ -409,7 +447,7 @@ ANALYTICS LOGIC: Update user's most frequent vendor/type based on usage patterns
 This runs asynchronously so it doesn't slow down the engagement recording
 */
 func updateUserPreferences(userID string) {
-	log.Printf("🔄 Updating preferences for user %s", userID)
+	log.Printf("Updating preferences for user %s", userID)
 	
 	// Find most frequently used vendor (FIXED: use engagement_type instead of used column)
 	var mostFrequentVendor string
@@ -425,7 +463,7 @@ func updateUserPreferences(userID string) {
 	
 	err := config.DB.QueryRow(vendorQuery, userID).Scan(&mostFrequentVendor)
 	if err != nil && err != sql.ErrNoRows {
-		log.Printf("❌ Error finding most frequent vendor: %v", err)
+		log.Printf(" Error finding most frequent vendor: %v", err)
 		return
 	}
 	
@@ -443,7 +481,7 @@ func updateUserPreferences(userID string) {
 	
 	err = config.DB.QueryRow(typeQuery, userID).Scan(&mostFrequentVendorType)
 	if err != nil && err != sql.ErrNoRows {
-		log.Printf("❌ Error finding most frequent vendor type: %v", err)
+		log.Printf("Error finding most frequent vendor type: %v", err)
 		return
 	}
 	
@@ -471,13 +509,13 @@ func updateUserPreferences(userID string) {
 		_, err = config.DB.Exec(updateQuery, userID, vendorParam, typeParam)
 		
 		if err != nil {
-			log.Printf("❌ Error updating user preferences: %v", err)
+			log.Printf("Error updating user preferences: %v", err)
 		} else {
-			log.Printf("✅ Updated preferences for %s: vendor=%s, type=%s", 
+			log.Printf("Updated preferences for %s: vendor=%s, type=%s", 
 				userID, mostFrequentVendor, mostFrequentVendorType)
 		}
 	} else {
-		log.Printf("📊 No usage data yet for user %s - preferences unchanged", userID)
+		log.Printf("No usage data yet for user %s - preferences unchanged", userID)
 	}
 }
 
@@ -487,7 +525,7 @@ func getVendorAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	vendorID := vars["vendor_id"]
 	
-	log.Printf("📊 Getting analytics for vendor %s", vendorID)
+	log.Printf("Getting analytics for vendor %s", vendorID)
 	
 	// PART 2: Get individual campaign statistics (clicks and uses per campaign)
 	campaignQuery := `
@@ -529,7 +567,7 @@ func getVendorAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
 	// PART 3: Execute campaign analytics query
 	rows, err := config.DB.Query(campaignQuery, vendorID)
 	if err != nil {
-		log.Printf("❌ Error executing campaign query: %v", err)
+		log.Printf("Error executing campaign query: %v", err)
 		http.Error(w, "Failed to get campaign analytics", http.StatusInternalServerError)
 		return
 	}
@@ -560,7 +598,7 @@ func getVendorAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
 			&cm.TotalUses,
 		)
 		if err != nil {
-			log.Printf("❌ Error scanning campaign: %v", err)
+			log.Printf("Error scanning campaign: %v", err)
 			continue
 		}
 		
@@ -570,12 +608,12 @@ func getVendorAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
 		
 		campaigns = append(campaigns, cm)
 		
-		log.Printf("📈 Campaign %s: %d clicks, %d uses", 
+		log.Printf("Campaign %s: %d clicks, %d uses", 
 			cm.CampaignID, cm.TotalClicks, cm.TotalUses)
 	}
 	
 	if err = rows.Err(); err != nil {
-		log.Printf("❌ Error iterating campaigns: %v", err)
+		log.Printf("Error iterating campaigns: %v", err)
 		http.Error(w, "Error processing campaigns", http.StatusInternalServerError)
 		return
 	}
@@ -601,7 +639,7 @@ func getVendorAnalyticsHandler(w http.ResponseWriter, r *http.Request) {
 		"campaigns": campaigns, // Each has: campaign_id, title, code, enabled, total_clicks, total_uses
 	}
 	
-	log.Printf("✅ Vendor %s analytics: %d campaigns, %.1f%% conversion", 
+	log.Printf("Vendor %s analytics: %d campaigns, %.1f%% conversion", 
 		vendorID, len(campaigns), overallConversionRate)
 	
 	// PART 8: Return clean analytics
@@ -625,4 +663,242 @@ func getUserCurrentLocation(userID string) (float64, float64, error) {
 	
 	log.Printf("User %s is at location: lat=%f, lng=%f", userID, userLat, userLng)
 	return userLat, userLng, nil
+}
+
+// getUserLocationHandler retrieves the current location of a user
+func getUserLocationHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	userID := vars["id"]
+	
+	// Use consolidated location function
+	userLat, userLng, err := getUserCurrentLocation(userID)
+	if err != nil {
+		log.Printf("%v", err)
+		http.Error(w, "User location not found", http.StatusNotFound)
+		return
+	}
+	
+	response := map[string]interface{}{
+		"user_id":   userID,
+		"latitude":  userLat,
+		"longitude": userLng,
+		"message":   "User location retrieved successfully",
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// Distance-sorted campaigns for scrollable list
+func getAllActiveCampaignsWithDistanceHandler(w http.ResponseWriter, r *http.Request) {
+	// PART 1: Extract user ID from URL
+	vars := mux.Vars(r)
+	userID := vars["user_id"]
+	
+	if userID == "" {
+		http.Error(w, "Missing user_id parameter", http.StatusBadRequest)
+		return
+	}
+	
+	log.Printf("📱 Getting distance-sorted campaigns for user %s", userID)
+
+	// PART 2: Get user's current location from database
+	userLat, userLng, err := getUserCurrentLocation(userID)
+	if err != nil {
+		log.Printf("Error getting user location for %s: %v", userID, err)
+		http.Error(w, "User location not found", http.StatusNotFound)
+		return
+	}
+	
+	log.Printf("User %s location: lat=%.6f, lng=%.6f", userID, userLat, userLng)
+
+	// PART 3: Get ALL active campaigns with distance calculation (FIXED: Use correct vendor columns)
+	query := `
+		SELECT 
+			c.campaign_id,
+			c.title,
+			c.description,
+			c.code,
+			c.enabled,
+			v.vendor_type,
+			v.address,
+			v.lat as vendor_lat,
+			v.long as vendor_lng,
+			-- Calculate real-world distance in meters using PostGIS
+			ST_Distance(
+				ST_GeogFromText('POINT(' || $1 || ' ' || $2 || ')'),  -- User's position (lng, lat)
+				ST_GeogFromText('POINT(' || v.long || ' ' || v.lat || ')')  -- Vendor position (lng, lat)
+			) as distance_meters
+		FROM campaigns c
+		JOIN vendors v ON c.vendor_id = v.vendor_id
+		WHERE c.enabled = true 
+		  AND c.start_date <= CURRENT_DATE
+		  AND c.end_date >= CURRENT_DATE
+		  AND (
+			CURRENT_DATE > c.start_date OR
+			(CURRENT_DATE = c.start_date AND CURRENT_TIME >= c.run_time::time)
+		  )
+		ORDER BY distance_meters ASC
+		LIMIT 50`
+
+	// PART 4: Execute distance query with user's coordinates
+	rows, err := config.DB.Query(query, userLng, userLat)  // Note: lng first, then lat for PostGIS
+	if err != nil {
+		log.Printf("Error fetching campaigns with distance: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	// PART 5: Process results and format distances for display
+	var campaigns []map[string]interface{}
+	for rows.Next() {
+		var campaignID, title, description, code, vendorType, address string
+		var enabled bool
+		var vendorLat, vendorLng, distanceMeters float64
+
+		err := rows.Scan(
+			&campaignID, &title, &description, &code, &enabled,
+			&vendorType, &address, &vendorLat, &vendorLng, &distanceMeters,
+		)
+		if err != nil {
+			log.Printf("Error scanning campaign row: %v", err)
+			continue
+		}
+
+		// Format distance for human-readable display
+		var distanceDisplay string
+		if distanceMeters < 1000 {
+			distanceDisplay = fmt.Sprintf("%.0fm", distanceMeters)
+		} else {
+			distanceDisplay = fmt.Sprintf("%.1fkm", distanceMeters/1000)
+		}
+
+		// Build campaign object with Flutter-compatible field names (FIXED: Use vendor_type instead of vendor_name)
+		campaign := map[string]interface{}{
+			"campaign_id":       campaignID,
+			"title":            title,
+			"description":      description,
+			"code":             code,
+			"enabled":          enabled,
+			"vendor_name":      vendorType,           // Use vendor_type as display name
+			"vendor_address":   address,              // Flutter expects this field name
+			"vendor_lat":       vendorLat,
+			"vendor_lng":       vendorLng,
+			"distance_meters":  distanceMeters,       // Raw distance for calculations
+			"distance_display": distanceDisplay,      // Formatted for UI display
+		}
+
+		campaigns = append(campaigns, campaign)
+		
+		// Debug: Log first few campaigns
+		if len(campaigns) <= 5 {
+			log.Printf("Campaign %d: %s (%s) at %s - %.0fm away", 
+				len(campaigns), title, vendorType, address, distanceMeters)
+		}
+	}
+
+	// PART 6: Return distance-sorted campaigns
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(campaigns)
+	log.Printf("Returned %d campaigns ordered by distance for user %s", len(campaigns), userID)
+}
+
+
+func handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	userID := vars["user_id"]
+	
+	log.Printf("New user WebSocket connection: %s", userID)
+	
+	// Upgrade HTTP connection to WebSocket
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed for user %s: %v", userID, err)
+		return
+	}
+	defer conn.Close()
+	
+	// Register connection
+	connManager.mutex.Lock()
+	connManager.userConnections[userID] = conn
+	connManager.mutex.Unlock()
+	
+	// Send welcome message
+	welcomeMsg := WSMessage{
+		Type: "connected",
+		Data: map[string]string{
+			"message": "Connected to StreetSavvy real-time updates",
+			"user_id": userID,
+		},
+	}
+	conn.WriteJSON(welcomeMsg)
+	
+	// Listen for incoming messages
+	for {
+		var msg WSMessage
+		err := conn.ReadJSON(&msg)
+		if err != nil {
+			log.Printf("User %s disconnected: %v", userID, err)
+			break
+		}
+		
+		log.Printf("Received message from user %s: %s", userID, msg.Type)
+	}
+	
+	// Clean up connection
+	connManager.mutex.Lock()
+	delete(connManager.userConnections, userID)
+	connManager.mutex.Unlock()
+	
+	log.Printf("User %s WebSocket connection closed", userID)
+}
+
+func handleVendorWebSocket(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	vendorID := vars["vendor_id"]
+	
+	log.Printf("New vendor WebSocket connection: %s", vendorID)
+	
+	// Upgrade HTTP connection to WebSocket
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed for vendor %s: %v", vendorID, err)
+		return
+	}
+	defer conn.Close()
+	
+	// Register connection
+	connManager.mutex.Lock()
+	connManager.vendorConnections[vendorID] = conn
+	connManager.mutex.Unlock()
+	
+	// Send welcome message
+	welcomeMsg := WSMessage{
+		Type: "connected",
+		Data: map[string]string{
+			"message": "Connected to StreetSavvy vendor analytics",
+			"vendor_id": vendorID,
+		},
+	}
+	conn.WriteJSON(welcomeMsg)
+	
+	// Listen for incoming messages
+	for {
+		var msg WSMessage
+		err := conn.ReadJSON(&msg)
+		if err != nil {
+			log.Printf("Vendor %s disconnected: %v", vendorID, err)
+			break
+		}
+		
+		log.Printf("Received message from vendor %s: %s", vendorID, msg.Type)
+	}
+	
+	// Clean up connection
+	connManager.mutex.Lock()
+	delete(connManager.vendorConnections, vendorID)
+	connManager.mutex.Unlock()
+	
+	log.Printf("Vendor %s WebSocket connection closed", vendorID)
 }
