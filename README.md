@@ -1,6 +1,6 @@
 # StreetSavvy
 
-A geospatial vendor-to-consumer promotional platform that enables businesses to reach nearby users with personalized campaigns in real-time.
+A geospatial vendor-to-consumer promotional platform that enables businesses to reach nearby users with personalized campaigns in real-time; built as an MVP for RR Technologies.
 
 ## Project Overview
 
@@ -33,68 +33,6 @@ StreetSavvy is a location-based marketing platform consisting of two mobile appl
 - **Core**: PostgreSQL 13+
 - **Extensions**: PostGIS for spatial operations
 - **Features**: Geospatial indexing, real-time triggers
-
-## Project Structure
-
-```
-streetsavvy/
-├── README.md
-├── .gitignore
-├── backend/                    # Go API Server
-│   ├── main.go                # Application entry point
-│   ├── go.mod                 # Go dependencies
-│   ├── go.sum                 # Dependency checksums
-│   ├── .env                   # Environment configuration
-│   ├── config/
-│   │   └── database.go        # Database connection & config
-│   ├── models/
-│   │   ├── user.go           # User data models
-│   │   ├── vendor.go         # Vendor data models
-│   │   ├── campaign.go       # Campaign data models
-│   │   └── location.go       # Location event models
-│   └── handlers/
-│       ├── users.go          # User API endpoints
-│       ├── campaigns.go      # Campaign API endpoints
-│       ├── vendors.go        # Vendor API endpoints
-│       └── websocket.go      # WebSocket handlers
-├── user_app/                  # Flutter User Application
-│   ├── pubspec.yaml          # Flutter dependencies
-│   ├── lib/
-│   │   ├── main.dart         # App entry point
-│   │   ├── models/
-│   │   │   ├── user.dart     # User data models
-│   │   │   └── campaign.dart # Campaign data models
-│   │   ├── services/
-│   │   │   ├── api_service.dart      # HTTP API client
-│   │   │   └── websocket_service.dart # WebSocket client
-│   │   ├── screens/
-│   │   │   ├── user_selector.dart    # User selection screen
-│   │   │   ├── user_home_screen.dart # Main user interface
-│   │   │   └── campaign_detail.dart  # Campaign details
-│   │   └── widgets/
-│   │       └── campaign_card.dart    # Campaign UI components
-├── vendor_app/               # Flutter Vendor Application
-│   ├── pubspec.yaml         # Flutter dependencies  
-│   ├── lib/
-│   │   ├── main.dart        # App entry point
-│   │   ├── models/
-│   │   │   ├── vendor.dart  # Vendor data models
-│   │   │   └── analytics.dart # Analytics data models
-│   │   ├── services/
-│   │   │   ├── api_service.dart      # HTTP API client
-│   │   │   └── websocket_service.dart # WebSocket client
-│   │   ├── screens/
-│   │   │   ├── vendor_selector.dart   # Vendor selection
-│   │   │   ├── vendor_dashboard.dart  # Analytics dashboard
-│   │   │   └── campaign_management.dart # Campaign CRUD
-│   │   └── widgets/
-│   │       ├── analytics_card.dart   # Analytics components
-│   │       ├── campaign_card.dart    # Campaign management UI
-│   │       └── heatmap_overlay.dart  # Google Maps heatmap
-└── database/
-    ├── schema.sql           # Complete database schema
-    └── test_data.sql        # Sample data for testing
-```
 
 ## Features Implemented
 
@@ -405,44 +343,6 @@ UPDATE user_location_events SET geom = ST_SetSRID(ST_MakePoint(long, lat), 4326)
 ### Health Check
 - `GET /api/health` - Server health status
 
-## Testing
-
-### API Testing with curl
-
-1. **Test health endpoint**:
-   ```bash
-   curl http://localhost:8080/api/health
-   ```
-
-2. **Get user's nearby campaigns**:
-   ```bash
-   curl http://localhost:8080/api/users/U0001/nearby-campaigns
-   ```
-
-3. **Record engagement**:
-   ```bash
-   curl -X POST http://localhost:8080/api/users/U0001/engagements/C0001/clicked
-   ```
-
-### Frontend Testing
-
-1. **User App**: 
-   - Select test user (U0001-U0005)
-   - View nearby campaigns based on location/segments
-   - Test engagement tracking (click/usage)
-   - Verify real-time notifications
-
-2. **Vendor App**:
-   - Select test vendor (V0001-V0003) 
-   - View analytics dashboard
-   - Monitor real-time engagement updates
-   - Test campaign management
-
-### WebSocket Testing
-
-Test WebSocket connections using browser developer tools or WebSocket client:
-- Connect to `ws://localhost:8080/api/users/U0001/ws`
-- Send test messages and verify real-time updates
 
 ## Key Features Explained
 
@@ -486,26 +386,3 @@ Test WebSocket connections using browser developer tools or WebSocket client:
 - **Input Validation**: Data validation at API layer
 - **Connection Management**: Secure WebSocket handling
 
-## Future Enhancements
-
-### Planned Features
-- **Push Notifications**: Mobile push for campaign alerts
-- **Advanced Analytics**: Detailed user behavior tracking
-- **Campaign Scheduling**: Automated campaign activation
-- **Heatmap Visualization**: Enhanced density mapping
-- **Multi-tenant Support**: Enterprise vendor management
-
-### Technical Improvements
-- **Caching Layer**: Redis for frequently accessed data
-- **Load Balancing**: Horizontal scaling support
-- **Monitoring**: Comprehensive logging and metrics
-- **Testing Suite**: Automated testing framework
-- **CI/CD Pipeline**: Deployment automation
-
-## License
-
-This project is developed for educational purposes as part of a Computer Science curriculum.
-
----
-
-**StreetSavvy** - Connecting businesses with nearby customers through intelligent, real-time geospatial marketing.
