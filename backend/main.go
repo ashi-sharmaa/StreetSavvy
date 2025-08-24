@@ -902,3 +902,308 @@ func handleVendorWebSocket(w http.ResponseWriter, r *http.Request) {
 	
 	log.Printf("Vendor %s WebSocket connection closed", vendorID)
 }
+
+// Broadcast engagement update to relevant vendor
+func broadcastEngagementUpdate(vendorID string, engagementData map[string]interface{}) {
+	connManager.mutex.RLock()
+	conn, exists := connManager.vendorConnections[vendorID]
+	connManager.mutex.RUnlock()
+	
+	if exists {
+		msg := WSMessage{
+			Type:     "engagement_update",
+			VendorID: vendorID,
+			Data:     engagementData,
+		}
+		
+		if err := conn.WriteJSON(msg); err != nil {
+			log.Printf("Error broadcasting engagement update to vendor %s: %v", vendorID, err)
+		} else {
+			log.Printf("Broadcast engagement update to vendor %s", vendorID)
+		}
+	}
+}
+
+// Get vendor ID for a campaign and broadcast engagement
+func broadcastEngagementToVendor(userID, campaignID, action string) {
+	// Get vendor ID for this campaign
+	var vendorID string
+	vendorQuery := `SELECT vendor_id FROM campaigns WHERE campaign_id = $1`
+	err := config.DB.QueryRow(vendorQuery, campaignID).Scan(&vendorID)
+	if err != nil {
+		log.Printf("Error getting vendor for campaign %s: %v", campaignID, err)
+		return
+	}
+	
+	// Prepare engagement data
+	engagementData := map[string]interface{}{
+		"user_id":     userID,
+		"campaign_id": campaignID,
+		"action":      action,
+		"timestamp":   time.Now().Format(time.RFC3339),
+	}
+	
+	// Broadcast to vendor
+	broadcastEngagementUpdate(vendorID, engagementData)
+}
+
+// Track user location and send campaign notifications
+func trackUserLocation(userID string, conn *websocket.Conn) {
+	ticker := time.NewTicker(30 * time.Second) // Check every 30 seconds
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-ticker.C:
+			// Get user's current campaigns
+			campaigns, err := getUserCampaignsFromDB(userID)
+			if err != nil {
+				log.Printf("Error getting campaigns for user %s: %v", userID, err)
+				continue
+			}
+			
+			// Send campaign updates if any
+			if len(campaigns) > 0 {
+				msg := WSMessage{
+					Type:   "campaign_update",
+					UserID: userID,
+					Data: map[string]interface{}{
+						"campaigns": campaigns,
+						"count":     len(campaigns),
+						"timestamp": time.Now().Format(time.RFC3339),
+					},
+				}
+				
+				if err := conn.WriteJSON(msg); err != nil {
+					log.Printf("Error sending campaign update to user %s: %v", userID, err)
+					return
+				}
+			}
+		}
+	}
+}
+
+// Send initial analytics to vendor
+func sendInitialAnalytics(vendorID string, conn *websocket.Conn) {
+	// Get vendor analytics from database
+	analytics, err := getVendorAnalyticsFromDB(vendorID)
+	if err != nil {
+		log.Printf("Error getting analytics for vendor %s: %v", vendorID, err)
+		return
+	}
+	
+	msg := WSMessage{
+		Type:     "analytics_update",
+		VendorID: vendorID,
+		Data:     analytics,
+	}
+	
+	if err := conn.WriteJSON(msg); err != nil {
+		log.Printf("Error sending initial analytics to vendor %s: %v", vendorID, err)
+	}
+}
+
+// Handle incoming messages from users
+func handleUserMessage(userID string, msg WSMessage) {
+	switch msg.Type {
+	case "location_update":
+		// Handle location updates from mobile app
+		if locationData, ok := msg.Data.(map[string]interface{}); ok {
+			lat, _ := locationData["latitude"].(float64)
+			lng, _ := locationData["longitude"].(float64)
+			
+			// Store location in database
+			storeUserLocation(userID, lat, lng)
+			
+			log.Printf("Location update from user %s: lat=%f, lng=%f", userID, lat, lng)
+		}
+	case "engagement":
+		// Handle engagement events via WebSocket
+		if engagementData, ok := msg.Data.(map[string]interface{}); ok {
+			campaignID, _ := engagementData["campaign_id"].(string)
+			action, _ := engagementData["action"].(string)
+			
+			log.Printf("WebSocket engagement from user %s: %s on %s", userID, action, campaignID)
+			
+			// Broadcast to vendor immediately
+			broadcastEngagementToVendor(userID, campaignID, action)
+		}
+	case "ping":
+		// Respond to ping to keep connection alive
+		pongMsg := WSMessage{Type: "pong", Data: "alive"}
+		connManager.mutex.RLock()
+		if conn, exists := connManager.userConnections[userID]; exists {
+			conn.WriteJSON(pongMsg)
+		}
+		connManager.mutex.RUnlock()
+	}
+}
+
+// Handle incoming messages from vendors
+func handleVendorMessage(vendorID string, msg WSMessage) {
+	switch msg.Type {
+	case "request_analytics":
+		// Send fresh analytics data
+		go sendInitialAnalytics(vendorID, connManager.vendorConnections[vendorID])
+	case "ping":
+		// Respond to ping to keep connection alive
+		pongMsg := WSMessage{Type: "pong", Data: "alive"}
+		connManager.mutex.RLock()
+		if conn, exists := connManager.vendorConnections[vendorID]; exists {
+			conn.WriteJSON(pongMsg)
+		}
+		connManager.mutex.RUnlock()
+	}
+}
+
+// Helper function to get user campaigns from database
+func getUserCampaignsFromDB(userID string) ([]map[string]interface{}, error) {
+	// Get user location
+	userLat, userLng, err := getUserCurrentLocation(userID)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Same query as getUserNearbyPromsHandler but return as map
+	campaignQuery := `
+		SELECT 
+			c.campaign_id, 
+			c.title, 
+			c.code,
+			c.description, 
+			v.address,           
+			v.vendor_type      
+		FROM campaigns c
+		JOIN vendors v ON c.vendor_id = v.vendor_id
+		JOIN segments s ON c.segment_id = s.segment_id
+		JOIN users u ON u.user_id = $1
+		WHERE c.enabled = true
+			AND c.start_date <= CURRENT_DATE
+			AND c.end_date >= CURRENT_DATE
+			AND ST_DWithin(
+				ST_Transform(ST_SetSRID(ST_MakePoint(v.long, v.lat), 4326), 3857),
+				ST_Transform(ST_SetSRID(ST_MakePoint($2, $3), 4326), 3857),
+				c.geofence_radius_km * 1000
+			)
+			AND (
+				s.segment_name = CONCAT('loyalty_tier_', u.loyalty_tier)
+				OR s.segment_name = CONCAT('most_frequent_vendor_type_', u.most_frequent_vendor_type)
+				OR s.segment_name = CONCAT('most_frequent_vendor_', u.most_frequent_vendor)
+			)`
+	
+	rows, err := config.DB.Query(campaignQuery, userID, userLng, userLat)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var campaigns []map[string]interface{}
+	for rows.Next() {
+		var campaignID, title, code, description, address, vendorType string
+		err := rows.Scan(&campaignID, &title, &code, &description, &address, &vendorType)
+		if err != nil {
+			continue
+		}
+		
+		campaigns = append(campaigns, map[string]interface{}{
+			"campaign_id":    campaignID,
+			"title":         title,
+			"code":          code,
+			"description":   description,
+			"vendor_address": address,
+			"vendor_type":   vendorType,
+		})
+	}
+	
+	return campaigns, nil
+}
+
+// Helper function to get vendor analytics from database
+func getVendorAnalyticsFromDB(vendorID string) (map[string]interface{}, error) {
+	// Reuse existing analytics query logic
+	campaignQuery := `
+		SELECT 
+			c.campaign_id,
+			c.title,
+			c.code,
+			c.enabled,
+			COALESCE(clicks.total_clicks, 0) as total_clicks,
+			COALESCE(uses.total_uses, 0) as total_uses
+		FROM campaigns c
+		LEFT JOIN (
+			SELECT campaign_id, COUNT(*) as total_clicks
+			FROM campaign_user_engagements 
+			WHERE engagement_type = 'clicked'
+			GROUP BY campaign_id
+		) clicks ON c.campaign_id = clicks.campaign_id
+		LEFT JOIN (
+			SELECT campaign_id, COUNT(*) as total_uses
+			FROM campaign_user_engagements 
+			WHERE engagement_type = 'used'
+			GROUP BY campaign_id
+		) uses ON c.campaign_id = uses.campaign_id
+		WHERE c.vendor_id = $1
+		ORDER BY c.campaign_id`
+	
+	rows, err := config.DB.Query(campaignQuery, vendorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var campaigns []map[string]interface{}
+	var totalClicks, totalUses int
+	
+	for rows.Next() {
+		var campaignID, title, code string
+		var enabled bool
+		var clicks, uses int
+		
+		err := rows.Scan(&campaignID, &title, &code, &enabled, &clicks, &uses)
+		if err != nil {
+			continue
+		}
+		
+		totalClicks += clicks
+		totalUses += uses
+		
+		campaigns = append(campaigns, map[string]interface{}{
+			"campaign_id":   campaignID,
+			"title":        title,
+			"code":         code,
+			"enabled":      enabled,
+			"total_clicks": clicks,
+			"total_uses":   uses,
+		})
+	}
+	
+	// Calculate conversion rate
+	conversionRate := 0.0
+	if totalClicks > 0 {
+		conversionRate = float64(totalUses) / float64(totalClicks) * 100
+	}
+	
+	return map[string]interface{}{
+		"vendor_id": vendorID,
+		"vendor_summary": map[string]interface{}{
+			"total_campaigns":        len(campaigns),
+			"overall_conversion_rate": conversionRate,
+			"total_clicks":           totalClicks,
+			"total_uses":             totalUses,
+		},
+		"campaigns": campaigns,
+		"timestamp": time.Now().Format(time.RFC3339),
+	}, nil
+}
+
+// Store user location in database
+func storeUserLocation(userID string, lat, lng float64) {
+	insertQuery := `
+		INSERT INTO user_location_events (user_id, lat, long, event_time)
+		VALUES ($1, $2, $3, NOW())`
+	
+	_, err := config.DB.Exec(insertQuery, userID, lat, lng)
+	if err != nil {
+		log.Printf("Error storing location for user %s: %v", userID, err)
+	}
+}
